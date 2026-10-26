@@ -1,17 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 Gemini Multimodal Live2D Rigger & Unified Action/Motion Generator (Azur Lane / banerwei_3 Architecture).
-Strictly follows the 3-stage pipeline:
-  Stage 1: gemini-nano-banana-2.1 generates the 3x3 component sheet.
-  Stage 2: Adaptive Valley Slicing + Exterior BFS Matting extracts 9 transparent RGBA parts.
-  Stage 3: Unified Multimodal Call to gemini-3.8-flash with BOTH:
-           (a) The sliced & matted 9-part transparent contact sheet + cropped pixel dimensions
-           (b) The user's original prompt (including any custom motion/action requests)
-           Returns in ONE unified JSON:
-             - components (anatomical rigging anchors, scales, pivots, z_index)
-             - custom_motions (parameterized keyframe curves for user-requested & character-specific motions)
-             - physics_profile (4-vertex pendulum physics parameters)
-             - dialogues (secretary interaction lines + custom motion voice lines)
+Supports both 3x3 (9-Part Standard) and 4x4 (16-Part High-Flexibility) Component Grids,
+as well as Standard (1K/2K) and 4K UHD (4096x4096) component resolutions.
 """
 
 import io
@@ -24,14 +15,25 @@ from typing import Dict, Any, Optional, List, Tuple
 from PIL import Image, ImageDraw
 from ..sdk.client import HrioClient
 
-COMPONENT_ORDER = [
+COMPONENT_ORDER_3X3 = [
     "back_hair", "head_base", "front_hair",
     "eyes_open", "eyes_closed", "mouth",
     "body_torso", "arm_left", "arm_right",
 ]
 
-DEFAULT_RIG_CONFIG: Dict[str, Any] = {
+COMPONENT_ORDER_4X4 = [
+    "back_hair", "head_base", "front_hair", "side_hair",
+    "eyes_open", "eyes_closed", "eyebrows", "mouth",
+    "body_torso", "skirt_lower", "arm_left", "arm_right",
+    "legs_stockings", "headwear_ears", "back_tail_wings", "hand_prop_effect",
+]
+
+# Backwards-compatible default alias
+COMPONENT_ORDER = COMPONENT_ORDER_3X3
+
+DEFAULT_RIG_CONFIG_3X3: Dict[str, Any] = {
     "character_name": "banerwei_sailor",
+    "grid": "3x3",
     "canvas": {"width": 1000, "height": 1000},
     "components": {
         "back_hair": {
@@ -108,6 +110,128 @@ DEFAULT_RIG_CONFIG: Dict[str, Any] = {
         },
     },
 }
+
+DEFAULT_RIG_CONFIG_4X4: Dict[str, Any] = {
+    "character_name": "azur_4x4_4k_heroine",
+    "grid": "4x4",
+    "canvas": {"width": 1000, "height": 1000},
+    "components": {
+        "back_tail_wings": {
+            "z_index": 5,
+            "canvas_center": [505, 520],
+            "scale": 0.48,
+            "pivot": [0.50, 0.50],
+            "live2d_params": ["ParamBodyAngleX", "ParamBodyAngleZ", "ParamHairBack", "ParamBreath"],
+        },
+        "back_hair": {
+            "z_index": 10,
+            "canvas_center": [500, 265],
+            "scale": 0.84,
+            "pivot": [0.5, 0.35],
+            "live2d_params": ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamHairBack"],
+        },
+        "legs_stockings": {
+            "z_index": 15,
+            "canvas_center": [500, 775],
+            "scale": 0.88,
+            "pivot": [0.5, 0.12],
+            "live2d_params": ["ParamBodyAngleX", "ParamBodyAngleZ"],
+        },
+        "head_base": {
+            "z_index": 20,
+            "canvas_center": [500, 256],
+            "scale": 0.78,
+            "pivot": [0.5, 0.86],
+            "live2d_params": ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamCheek"],
+        },
+        "arm_left": {
+            "z_index": 25,
+            "canvas_center": [410, 468],
+            "scale": 0.60,
+            "pivot": [0.82, 0.10],
+            "live2d_params": ["ParamArmLAngle", "ParamBodyAngleX", "ParamBreath"],
+        },
+        "arm_right": {
+            "z_index": 26,
+            "canvas_center": [588, 462],
+            "scale": 0.64,
+            "pivot": [0.28, 0.25],
+            "live2d_params": ["ParamArmRAngle", "ParamBodyAngleX", "ParamBreath"],
+        },
+        "body_torso": {
+            "z_index": 30,
+            "canvas_center": [500, 455],
+            "scale": 0.80,
+            "pivot": [0.5, 0.25],
+            "live2d_params": ["ParamBodyAngleX", "ParamBodyAngleY", "ParamBodyAngleZ", "ParamBreath"],
+        },
+        "skirt_lower": {
+            "z_index": 32,
+            "canvas_center": [500, 552],
+            "scale": 0.82,
+            "pivot": [0.5, 0.15],
+            "live2d_params": ["ParamBodyAngleX", "ParamBodyAngleZ", "ParamHairBack", "ParamBreath"],
+        },
+        "mouth": {
+            "z_index": 40,
+            "canvas_center": [500, 314],
+            "scale": 0.27,
+            "pivot": [0.5, 0.50],
+            "live2d_params": ["ParamMouthForm", "ParamMouthOpenY"],
+        },
+        "eyes_open": {
+            "z_index": 50,
+            "canvas_center": [500, 272],
+            "scale": 0.44,
+            "pivot": [0.5, 0.50],
+            "live2d_params": ["ParamEyeLOpen", "ParamEyeROpen", "ParamEyeBallX", "ParamEyeBallY"],
+        },
+        "eyes_closed": {
+            "z_index": 51,
+            "canvas_center": [500, 272],
+            "scale": 0.44,
+            "pivot": [0.5, 0.50],
+            "live2d_params": ["ParamEyeLSmile", "ParamEyeRSmile"],
+        },
+        "eyebrows": {
+            "z_index": 55,
+            "canvas_center": [500, 240],
+            "scale": 0.42,
+            "pivot": [0.5, 0.50],
+            "live2d_params": ["ParamAngleX", "ParamAngleY", "ParamEyeLSmile"],
+        },
+        "side_hair": {
+            "z_index": 58,
+            "canvas_center": [500, 295],
+            "scale": 0.80,
+            "pivot": [0.5, 0.22],
+            "live2d_params": ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamHairSide"],
+        },
+        "front_hair": {
+            "z_index": 60,
+            "canvas_center": [500, 242],
+            "scale": 0.82,
+            "pivot": [0.5, 0.32],
+            "live2d_params": ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamHairFront", "ParamHairSide"],
+        },
+        "headwear_ears": {
+            "z_index": 65,
+            "canvas_center": [500, 178],
+            "scale": 0.62,
+            "pivot": [0.5, 0.80],
+            "live2d_params": ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamHairFront"],
+        },
+        "hand_prop_effect": {
+            "z_index": 70,
+            "canvas_center": [642, 448],
+            "scale": 0.50,
+            "pivot": [0.35, 0.75],
+            "live2d_params": ["ParamArmRAngle", "ParamBodyAngleX", "ParamBreath"],
+        },
+    },
+}
+
+DEFAULT_RIG_CONFIG = DEFAULT_RIG_CONFIG_3X3
 
 DEFAULT_CUSTOM_MOTIONS: List[Dict[str, Any]] = [
     {
@@ -187,28 +311,42 @@ DEFAULT_ACTION_SPEC: Dict[str, Any] = {
 }
 
 
+def _detect_grid_mode(parts_data: Optional[Dict[str, Dict[str, Any]]] = None, grid: Optional[str] = None) -> str:
+    if grid and str(grid).strip().lower() in ("4x4", "4", "16", "16parts"):
+        return "4x4"
+    if parts_data and (len(parts_data) > 9 or "skirt_lower" in parts_data or "side_hair" in parts_data):
+        return "4x4"
+    return "3x3"
+
+
 def build_matted_contact_sheet(
     parts_data: Dict[str, Dict[str, Any]],
     output_path: Optional[str] = None,
-    sheet_size: int = 600,
+    sheet_size: int = 720,
+    grid: Optional[str] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """
-    Composite the 9 sliced & BFS-matted transparent components into a clean 3x3 contact sheet
-    so gemini-3.8-flash can inspect the exact matted parts alongside their pixel dimensions.
+    Composite the sliced & BFS-matted transparent components (9 parts for 3x3, or 16 parts for 4x4)
+    into a clean contact sheet so gemini-3.8-flash can inspect all matted parts alongside pixel dimensions.
     Returns: (data_uri, parts_summary_dict)
     """
-    cell_size = sheet_size // 3
+    grid_mode = _detect_grid_mode(parts_data, grid)
+    order = COMPONENT_ORDER_4X4 if grid_mode == "4x4" else COMPONENT_ORDER_3X3
+    grid_n = 4 if grid_mode == "4x4" else 3
+    if grid_mode == "4x4" and sheet_size < 800:
+        sheet_size = 800
+
+    cell_size = sheet_size // grid_n
     sheet = Image.new("RGBA", (sheet_size, sheet_size), (242, 245, 250, 255))
     draw = ImageDraw.Draw(sheet)
 
-    # Subtle grid lines separating the 9 matted cells
-    for i in range(1, 3):
+    for i in range(1, grid_n):
         draw.line([(i * cell_size, 0), (i * cell_size, sheet_size)], fill=(205, 213, 225, 255), width=2)
         draw.line([(0, i * cell_size), (sheet_size, i * cell_size)], fill=(205, 213, 225, 255), width=2)
 
     parts_summary: Dict[str, Any] = {}
-    for idx, name in enumerate(COMPONENT_ORDER):
-        r, c = divmod(idx, 3)
+    for idx, name in enumerate(order):
+        r, c = divmod(idx, grid_n)
         x0, y0 = c * cell_size, r * cell_size
         pdata = parts_data.get(name)
         if not pdata or "image" not in pdata:
@@ -217,17 +355,17 @@ def build_matted_contact_sheet(
         pw, ph = pimg.size
         parts_summary[name] = {
             "cell": [r, c],
-            "cropped_size": [pw, ph],
-            "bbox": list(pdata.get("bbox", (0, 0, pw, ph))),
+            "cropped_width_px": pw,
+            "cropped_height_px": ph,
+            "aspect_ratio": round(pw / max(1.0, float(ph)), 3),
         }
 
-        # Fit matted part inside cell with padding
-        pad = 16
-        avail = cell_size - pad * 2
-        scale = min(avail / max(1, pw), avail / max(1, ph))
+        max_dim = int(cell_size * 0.84)
+        scale = min(max_dim / max(1, pw), max_dim / max(1, ph))
         tw = max(1, int(pw * scale))
         th = max(1, int(ph * scale))
         thumb = pimg.resize((tw, th), Image.Resampling.LANCZOS)
+
         px = x0 + (cell_size - tw) // 2
         py = y0 + (cell_size - th) // 2
         sheet.alpha_composite(thumb, (px, py))
@@ -235,6 +373,7 @@ def build_matted_contact_sheet(
 
     rgb_sheet = sheet.convert("RGB")
     if output_path:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         rgb_sheet.save(output_path, format="JPEG", quality=88)
 
     buf = io.BytesIO()
@@ -246,71 +385,92 @@ def build_matted_contact_sheet(
 def calibrate_anatomical_rig(
     rig_config: Dict[str, Any],
     parts_data: Optional[Dict[str, Dict[str, Any]]] = None,
+    grid: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Ensure Azur Lane (banerwei_3) anatomical joints (neck-to-collar seam,
-    hollow bangs over face, eyes/mouth inside face, armless torso shoulder sockets)
-    lock to exact calibrated coordinates so components never float or drift.
+    Ensure Azur Lane (banerwei_3) anatomical joints lock to exact calibrated coordinates
+    on the 1000x1000 Live2D stage across both 3x3 (9-part) and 4x4 (16-part) grids,
+    and automatically normalize scale for 1K, 2K, or 4K (4096x4096) component pixel sizes.
     """
-    calibrated = copy.deepcopy(DEFAULT_RIG_CONFIG)
+    grid_mode = _detect_grid_mode(parts_data, grid or rig_config.get("grid"))
+    base_template = DEFAULT_RIG_CONFIG_4X4 if grid_mode == "4x4" else DEFAULT_RIG_CONFIG_3X3
+    calibrated = copy.deepcopy(base_template)
+
     if "character_name" in rig_config and rig_config["character_name"]:
         calibrated["character_name"] = rig_config["character_name"]
 
     raw_comps = rig_config.get("components", {})
 
-    bounds = {
-        "back_hair":  {"cx": (480, 520), "cy": (235, 285), "scale": (0.72, 0.96)},
-        "head_base":  {"cx": (490, 510), "cy": (242, 270), "scale": (0.70, 0.86)},
-        "front_hair": {"cx": (490, 510), "cy": (230, 260), "scale": (0.74, 0.92)},
-        "eyes_open":  {"cx": (492, 508), "cy": (262, 282), "scale": (0.36, 0.52)},
-        "eyes_closed":{"cx": (492, 508), "cy": (262, 282), "scale": (0.36, 0.52)},
-        "mouth":      {"cx": (494, 506), "cy": (305, 324), "scale": (0.20, 0.34)},
-        "body_torso": {"cx": (485, 515), "cy": (615, 655), "scale": (1.05, 1.25)},
-        "arm_left":   {"cx": (405, 438), "cy": (428, 460), "scale": (0.52, 0.68)},
-        "arm_right":  {"cx": (552, 588), "cy": (385, 420), "scale": (0.55, 0.72)},
-    }
+    if grid_mode == "4x4":
+        bounds = {
+            "back_tail_wings": {"cx": (490, 520), "cy": (505, 545), "target": (510.0, 470.0)},
+            "back_hair":       {"cx": (480, 520), "cy": (235, 290), "target": (290.0, 295.0)},
+            "legs_stockings":  {"cx": (485, 515), "cy": (745, 805), "target": (235.0, 390.0)},
+            "head_base":       {"cx": (490, 510), "cy": (242, 270), "target": (220.0, 260.0)},
+            "arm_left":        {"cx": (395, 425), "cy": (455, 480), "target": (145.0, 225.0)},
+            "arm_right":       {"cx": (575, 605), "cy": (450, 478), "target": (175.0, 215.0)},
+            "body_torso":      {"cx": (485, 515), "cy": (440, 475), "target": (255.0, 235.0)},
+            "skirt_lower":     {"cx": (485, 515), "cy": (540, 565), "target": (320.0, 210.0)},
+            "mouth":           {"cx": (494, 506), "cy": (305, 324), "target": (45.0, 30.0)},
+            "eyes_open":       {"cx": (492, 508), "cy": (262, 282), "target": (140.0, 62.0)},
+            "eyes_closed":     {"cx": (492, 508), "cy": (262, 282), "target": (140.0, 58.0)},
+            "eyebrows":        {"cx": (492, 508), "cy": (232, 250), "target": (140.0, 65.0)},
+            "side_hair":       {"cx": (485, 515), "cy": (275, 315), "target": (265.0, 275.0)},
+            "front_hair":      {"cx": (490, 510), "cy": (230, 258), "target": (255.0, 245.0)},
+            "headwear_ears":   {"cx": (490, 510), "cy": (165, 195), "target": (260.0, 235.0)},
+            "hand_prop_effect":{"cx": (625, 665), "cy": (430, 465), "target": (145.0, 160.0)},
+        }
+    else:
+        bounds = {
+            "back_hair":   {"cx": (480, 520), "cy": (235, 285), "target": (285.0, 285.0)},
+            "head_base":   {"cx": (490, 510), "cy": (242, 270), "target": (220.0, 260.0)},
+            "front_hair":  {"cx": (490, 510), "cy": (230, 260), "target": (255.0, 245.0)},
+            "eyes_open":   {"cx": (492, 508), "cy": (262, 282), "target": (140.0, 62.0)},
+            "eyes_closed": {"cx": (492, 508), "cy": (262, 282), "target": (140.0, 58.0)},
+            "mouth":       {"cx": (494, 506), "cy": (305, 324), "target": (45.0, 30.0)},
+            "body_torso":  {"cx": (485, 515), "cy": (615, 655), "target": (345.0, 665.0)},
+            "arm_left":    {"cx": (405, 438), "cy": (428, 460), "target": (130.0, 215.0)},
+            "arm_right":   {"cx": (552, 588), "cy": (385, 420), "target": (190.0, 210.0)},
+        }
 
     for name, default_comp in calibrated["components"].items():
-        if name in raw_comps and isinstance(raw_comps[name], dict):
-            rc = raw_comps[name]
-            b = bounds.get(name)
-            if b:
-                if isinstance(rc.get("canvas_center"), list) and len(rc["canvas_center"]) == 2:
-                    cx = max(b["cx"][0], min(b["cx"][1], float(rc["canvas_center"][0])))
-                    cy = max(b["cy"][0], min(b["cy"][1], float(rc["canvas_center"][1])))
-                    default_comp["canvas_center"] = [round(cx, 1), round(cy, 1)]
-                if isinstance(rc.get("scale"), (int, float)):
-                    sc = max(b["scale"][0], min(b["scale"][1], float(rc["scale"])))
-                    default_comp["scale"] = round(sc, 3)
+        b = bounds.get(name)
+        if not b:
+            continue
+        rc = raw_comps.get(name) if isinstance(raw_comps.get(name), dict) else {}
 
-    if parts_data:
-        def _aspect_adjust(part_name: str, target_w: float, target_h: float, blend: float = 0.35):
-            pinfo = parts_data.get(part_name)
-            if not pinfo or "size" not in pinfo:
-                return
+        if isinstance(rc.get("canvas_center"), list) and len(rc["canvas_center"]) == 2:
+            try:
+                cx = max(b["cx"][0], min(b["cx"][1], float(rc["canvas_center"][0])))
+                cy = max(b["cy"][0], min(b["cy"][1], float(rc["canvas_center"][1])))
+                default_comp["canvas_center"] = [round(cx, 1), round(cy, 1)]
+            except (ValueError, TypeError):
+                pass
+
+        # Resolution-independent target scale calibration (handles 1K, 2K, and 4K 4096x4096 seamlessly)
+        pinfo = parts_data.get(name) if parts_data else None
+        if pinfo and "size" in pinfo:
             pw, ph = pinfo["size"]
-            if pw <= 10 or ph <= 10:
-                return
-            ideal_scale = min(target_w / pw, target_h / ph)
-            base_scale = calibrated["components"][part_name]["scale"]
-            merged = base_scale * (1.0 - blend) + ideal_scale * blend
-            b = bounds[part_name]["scale"]
-            calibrated["components"][part_name]["scale"] = round(max(b[0], min(b[1], merged)), 3)
+            if pw > 8 and ph > 8:
+                target_w, target_h = b["target"]
+                if grid_mode == "4x4" and name == "body_torso" and (ph / float(pw)) > 1.45:
+                    target_w, target_h = 275.0, 310.0
+                    default_comp["canvas_center"][1] = 485.0
 
-        _aspect_adjust("head_base", 220, 260)
-        _aspect_adjust("front_hair", 255, 245)
-        _aspect_adjust("back_hair", 285, 285)
-        _aspect_adjust("eyes_open", 140, 62)
-        _aspect_adjust("eyes_closed", 140, 58)
-        _aspect_adjust("mouth", 45, 30)
-        _aspect_adjust("body_torso", 345, 665)
-        _aspect_adjust("arm_left", 130, 215)
-        _aspect_adjust("arm_right", 190, 210)
+                ideal_scale = min(target_w / float(pw), target_h / float(ph))
+                llm_factor = 1.0
+                if isinstance(rc.get("scale"), (int, float)) and float(rc["scale"]) > 0:
+                    ref_scale = default_comp["scale"]
+                    raw_ratio = float(rc["scale"]) / max(0.05, ref_scale)
+                    if 0.85 <= raw_ratio <= 1.15:
+                        llm_factor = 0.7 + 0.3 * raw_ratio
+                default_comp["scale"] = round(ideal_scale * llm_factor, 4)
 
-    calibrated["components"]["eyes_closed"]["canvas_center"] = list(
-        calibrated["components"]["eyes_open"]["canvas_center"]
-    )
-    calibrated["components"]["eyes_closed"]["scale"] = calibrated["components"]["eyes_open"]["scale"]
+    if "eyes_open" in calibrated["components"] and "eyes_closed" in calibrated["components"]:
+        calibrated["components"]["eyes_closed"]["canvas_center"] = list(
+            calibrated["components"]["eyes_open"]["canvas_center"]
+        )
+        calibrated["components"]["eyes_closed"]["scale"] = calibrated["components"]["eyes_open"]["scale"]
 
     return calibrated
 
@@ -395,7 +555,7 @@ def sanitize_custom_motions(raw_motions: Any) -> List[Dict[str, Any]]:
 class GeminiRigger:
     """
     Uses gemini-3.8-flash multimodal capabilities to inspect the sliced & matted
-    9-part transparent components + user prompt in ONE unified call, returning:
+    9-part (3x3) or 16-part (4x4) transparent components + user prompt in ONE unified call, returning:
       1. Calibrated anatomical rigging (components)
       2. Custom motion keyframe curves & algorithms (custom_motions)
       3. Pendulum physics parameters (physics_profile)
@@ -412,44 +572,49 @@ class GeminiRigger:
         model: str = "gemini-3.8-flash",
         parts_data: Optional[Dict[str, Dict[str, Any]]] = None,
         matted_sheet_path: Optional[str] = None,
+        grid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Unified Stage 3 Multimodal Call:
-        Sends the sliced/matted 9-part contact sheet + cropped part dimensions + user prompt
+        Sends the sliced/matted contact sheet (3x3 9-part or 4x4 16-part) + cropped part dimensions + user prompt
         to gemini-3.8-flash (reasoning_effort='low') to generate rigging, physics, dialogues,
         and custom motion keyframe curves in a single fast call.
         """
-        image_input = grid_image_path
+        grid_mode = _detect_grid_mode(parts_data, grid)
+        comp_order = COMPONENT_ORDER_4X4 if grid_mode == "4x4" else COMPONENT_ORDER_3X3
+        base_rig = DEFAULT_RIG_CONFIG_4X4 if grid_mode == "4x4" else DEFAULT_RIG_CONFIG_3X3
+
         parts_summary: Dict[str, Any] = {}
+        image_input = grid_image_path
 
         if parts_data:
-            matted_uri, parts_summary = build_matted_contact_sheet(
-                parts_data=parts_data,
-                output_path=matted_sheet_path,
-            )
-            image_input = matted_sheet_path if (matted_sheet_path and os.path.isfile(matted_sheet_path)) else matted_uri
+            try:
+                contact_uri, parts_summary = build_matted_contact_sheet(
+                    parts_data,
+                    output_path=matted_sheet_path,
+                    grid=grid_mode,
+                )
+                image_input = contact_uri
+            except Exception as e:
+                print(f"[GeminiRigger] Contact sheet build warning ({e}), using raw grid image.")
 
-        parts_json_str = json.dumps(parts_summary, ensure_ascii=False) if parts_summary else "{}"
+        dims_json = json.dumps(parts_summary, ensure_ascii=False) if parts_summary else "{}"
+        comp_list_str = ", ".join(comp_order)
 
         unified_prompt = (
-            f"You are an expert Live2D Cubism 3 Technical Artist & Motion Designer (Azur Lane / banerwei_3 standard).\n"
-            f"We have completed Stage 1 (3x3 component sheet generation) and Stage 2 (Adaptive Valley Slicing + BFS Matting).\n"
-            f"Attached is the MATTED 9-PART COMPONENT SHEET along with the cropped pixel dimensions of each part:\n"
-            f"{parts_json_str}\n\n"
-            f"USER PROMPT & ACTION REQUESTS:\n"
-            f"\"{character_hint}\"\n\n"
-            f"Your task is to analyze BOTH the sliced/matted components image AND the user prompt, and return a single unified JSON object containing:\n"
-            f"1. 'character_name' & 'archetype': A fitting name and archetype description.\n"
-            f"2. 'components': Anatomical assembly calibration on a 1000x1000 canvas for the 9 parts "
-            f"(back_hair, head_base, front_hair, eyes_open, eyes_closed, mouth, body_torso, arm_left, arm_right), "
-            f"each with 'z_index', 'canvas_center' [cx, cy], 'scale', and 'pivot' [px, py].\n"
-            f"   Reference coordinates: back_hair [500,260] scale 0.84; head_base [500,256] scale 0.78; "
-            f"arm_left [422,444] scale 0.60; arm_right [570,400] scale 0.64; body_torso [500,635] scale 1.15; "
-            f"mouth [500,314] scale 0.27; eyes_open [500,272] scale 0.44; eyes_closed [500,272] scale 0.44; front_hair [500,244] scale 0.82.\n"
-            f"3. 'physics_profile': {{'hair_mobility': 0.90, 'hair_delay': 0.72, 'skirt_mobility': 0.85, 'hair_front_damping': 0.86, 'hair_side_damping': 0.84, 'hair_back_damping': 0.82, 'skirt_sway_scale': 1.15}}\n"
-            f"4. 'dialogues': Chinese Azur Lane secretary voice lines for keys: login, home, main_1, main_2, main_3, touch_head, touch_body, touch_special, wedding, mail, mission, mission_complete, complete.\n"
-            f"5. 'custom_motions': An array of 2 to 3 bespoke Live2D motions with keyframe curves! "
-            f"IMPORTANT: If the user prompt mentions any specific actions, poses, emotions, or motions (e.g. jump, wave, shy, angry, dance, wink, salute, bow, cheer, etc.), "
+            f"You are the Lead Live2D Cubism 3 Technical Artist & Motion Designer for Azur Lane (banerwei_3 architecture).\n"
+            f"You are given:\n"
+            f"1) The sliced & background-matted {grid_mode} ({len(comp_order)}-component) Live2D contact sheet image.\n"
+            f"2) Exact cropped pixel dimensions of each matted component: {dims_json}\n"
+            f"3) The user's original prompt & action request: \"{character_hint}\"\n\n"
+            f"Generate a SINGLE unified JSON object containing:\n"
+            f"1. 'character_name': snake_case identifier.\n"
+            f"2. 'archetype': Personality archetype description.\n"
+            f"3. 'components': Rigging anchors on a 1000x1000 canvas for ({comp_list_str}), each with 'canvas_center' [cx, cy] and 'scale'.\n"
+            f"4. 'physics_profile': {{'hair_mobility': 0.90, 'hair_delay': 0.72, 'skirt_mobility': 0.88, 'hair_front_damping': 0.86, 'hair_side_damping': 0.84, 'hair_back_damping': 0.82, 'skirt_sway_scale': 1.18}}\n"
+            f"5. 'dialogues': Chinese Azur Lane secretary voice lines for keys: login, home, main_1, main_2, main_3, touch_head, touch_body, touch_special, wedding, mail, mission, mission_complete, complete.\n"
+            f"6. 'custom_motions': An array of 2 to 3 bespoke Live2D motions with keyframe curves! "
+            f"IMPORTANT: If the user prompt mentions any specific actions, poses, emotions, or motions (e.g. jump, wave, shy, angry, dance, wink, salute, bow, cheer, tail wag, ear twitch, magic cast, etc.), "
             f"you MUST create custom_motions implementing those exact requested actions! Even if the user only describes a character, design 2 signature custom motions matching their personality.\n"
             f"Each item in 'custom_motions' MUST follow this schema:\n"
             f"{{\n"
@@ -480,7 +645,7 @@ class GeminiRigger:
             f"Return strictly valid JSON."
         )
 
-        raw_config: Dict[str, Any] = copy.deepcopy(DEFAULT_RIG_CONFIG)
+        raw_config: Dict[str, Any] = copy.deepcopy(base_rig)
         action_spec: Dict[str, Any] = copy.deepcopy(DEFAULT_ACTION_SPEC)
 
         try:
@@ -508,13 +673,13 @@ class GeminiRigger:
         except Exception as e:
             print(f"[GeminiRigger] Multimodal unified rig note ({e}), applying calibrated defaults...")
 
-        # Register custom motion dialogues into action_spec["dialogues"] for seamless lookup
         for cm in action_spec.get("custom_motions", []):
             if cm.get("id") and cm.get("dialogue"):
                 action_spec["dialogues"][cm["id"]] = cm["dialogue"]
                 action_spec["dialogues"][cm["id"].lower()] = cm["dialogue"]
 
-        calibrated_rig = calibrate_anatomical_rig(raw_config, parts_data=parts_data)
+        calibrated_rig = calibrate_anatomical_rig(raw_config, parts_data=parts_data, grid=grid_mode)
         calibrated_rig["action_spec"] = action_spec
         calibrated_rig["parts_summary"] = parts_summary
+        calibrated_rig["grid"] = grid_mode
         return calibrated_rig

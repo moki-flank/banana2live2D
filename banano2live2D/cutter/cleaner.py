@@ -3,6 +3,7 @@
 Connected Component Filtering, Bounding Box Tightener & Azur Lane Joint Normalizer.
 Adapted from see-through-main (cv2.connectedComponentsWithStats & scrap_model.py)
 and Azur Lane (banerwei_3) Live2D component preparation rules.
+Supports both standard (1K/2K) and 4K (4096x4096) cells across 3x3 and 4x4 grids.
 """
 
 from typing import Tuple, Optional
@@ -31,6 +32,12 @@ def clean_and_tighten(
 
     alpha = arr[:, :, 3]
     h, w = alpha.shape
+    cell_area = max(1, h * w)
+
+    # Scale thresholds proportionally for 4K cells (e.g. 1024x1024 per cell)
+    scaled_min_area = max(min_area, int(cell_area * 0.00025))
+    scaled_sig_area = max(450, int(cell_area * 0.0038))
+    scaled_pad = max(pad, int(min(h, w) * 0.006))
 
     # Connected components
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
@@ -44,19 +51,34 @@ def clean_and_tighten(
     max_area = areas.max() if len(areas) > 0 else 0
 
     mask = np.zeros_like(alpha)
+    border_margin = max(2, int(min(h, w) * 0.006))
     for lbl in range(1, num_labels):
         area = stats[lbl, cv2.CC_STAT_AREA]
+        left = stats[lbl, cv2.CC_STAT_LEFT]
         top = stats[lbl, cv2.CC_STAT_TOP]
+        width = stats[lbl, cv2.CC_STAT_WIDTH]
         height = stats[lbl, cv2.CC_STAT_HEIGHT]
 
-        touches_tb = (top <= 2 or top + height >= h - 2)
+        touches_tb = (top <= border_margin or top + height >= h - border_margin)
+        touches_lr = (left <= border_margin or left + width >= w - border_margin)
+        touches_border = touches_tb or touches_lr
 
         if is_facial_feature:
-            if not touches_tb and area >= min_area:
+            if not touches_tb and area >= scaled_min_area:
                 mask[labels == lbl] = 255
         else:
-            if area >= 0.08 * max_area or area >= 450:
+            if area >= 0.08 * max_area:
+                # Reject thin border-bleed strips from adjacent cells
+                if touches_border and area < 0.22 * max_area and (width < w * 0.08 or height < h * 0.08):
+                    continue
                 mask[labels == lbl] = 255
+            elif not touches_border and area >= scaled_sig_area and area >= 0.025 * max_area:
+                mask[labels == lbl] = 255
+
+    # Fallback if everything was filtered out
+    if mask.max() == 0 and max_area > 0:
+        largest_lbl = 1 + int(np.argmax(areas))
+        mask[labels == largest_lbl] = 255
 
     arr[:, :, 3] = np.minimum(arr[:, :, 3], mask)
     cleaned = Image.fromarray(arr)
@@ -66,10 +88,10 @@ def clean_and_tighten(
     if not bbox:
         return cleaned, (0, 0, w, h)
 
-    b_x1 = max(0, bbox[0] - pad)
-    b_y1 = max(0, bbox[1] - pad)
-    b_x2 = min(w, bbox[2] + pad)
-    b_y2 = min(h, bbox[3] + pad)
+    b_x1 = max(0, bbox[0] - scaled_pad)
+    b_y1 = max(0, bbox[1] - scaled_pad)
+    b_x2 = min(w, bbox[2] + scaled_pad)
+    b_y2 = min(h, bbox[3] + scaled_pad)
     tight = cleaned.crop((b_x1, b_y1, b_x2, b_y2))
 
     if part_name:
@@ -86,11 +108,9 @@ def _clean_sleeve_cross_section(arm_img: Image.Image) -> Image.Image:
     """
     arr = np.array(arm_img)
     ah, aw, _ = arr.shape
-    # Sample sleeve fabric color from the middle third of the arm
     mid_slice = arr[int(ah * 0.25):int(ah * 0.55), :, :]
     opaque_mid = mid_slice[mid_slice[:, :, 3] > 180]
     if len(opaque_mid) > 50:
-        # Find bright/neutral sleeve pixels (low saturation)
         r_m = opaque_mid[:, 0].astype(np.int32)
         g_m = opaque_mid[:, 1].astype(np.int32)
         b_m = opaque_mid[:, 2].astype(np.int32)
@@ -102,14 +122,12 @@ def _clean_sleeve_cross_section(arm_img: Image.Image) -> Image.Image:
     else:
         return arm_img
 
-    # In the top 34% of the arm, replace warm peach cross-section fill with sleeve_rgb
     top_h = int(ah * 0.34)
     sub = arr[:top_h, :, :]
     r = sub[:, :, 0].astype(np.int32)
     b = sub[:, :, 2].astype(np.int32)
     a = sub[:, :, 3]
     is_peach_cap = (a > 40) & ((r - b) > 13) & (r > 195)
-    # Only apply on the shoulder half (not on a raised hand on the right side of arm_right)
     col_mask = np.zeros((top_h, aw), dtype=bool)
     col_mask[:, :int(aw * 0.62)] = True
     replace_mask = is_peach_cap & col_mask
@@ -131,7 +149,6 @@ def normalize_joint_seam(img: Image.Image, part_name: str) -> Image.Image:
     if part_name == "body_torso":
         arr = np.array(img)
         th, tw, _ = arr.shape
-        # Check if torso is armless (width-to-height ratio < 0.52)
         if tw / max(1.0, float(th)) < 0.52:
             top_limit = int(th * 0.13)
             for y in range(top_limit):
@@ -151,7 +168,6 @@ def normalize_joint_seam(img: Image.Image, part_name: str) -> Image.Image:
         top_xs = np.where(alpha[:max(1, int(ah * 0.15)), :] > 40)[1]
         bot_xs = np.where(alpha[int(ah * 0.80):, :] > 40)[1]
         if len(top_xs) > 0 and len(bot_xs) > 0:
-            # If shoulder cap is at top-left and hand goes down-right, mirror so it attaches to viewer's left shoulder
             if top_xs.mean() < aw * 0.45 and bot_xs.mean() > aw * 0.52:
                 cleaned = ImageOps.mirror(cleaned)
         return cleaned
@@ -161,7 +177,6 @@ def normalize_joint_seam(img: Image.Image, part_name: str) -> Image.Image:
         arr = np.array(cleaned)
         ah, aw, _ = arr.shape
         alpha = arr[:, :, 3]
-        # Check if it's a bent-elbow peace/wave arm (opaque pixels at both top-left shoulder and top-right hand)
         top_Right = alpha[:int(ah * 0.25), int(aw * 0.60):]
         mid_Left = alpha[int(ah * 0.20):int(ah * 0.55), :int(aw * 0.55)]
         if (top_Right > 40).sum() > 80 and (mid_Left > 40).sum() > 80:

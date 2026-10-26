@@ -3,9 +3,9 @@
 banano2live2D Interactive Studio Backend Server.
 Provides:
   - Static file serving for the Web Studio UI (/web/index.html) and generated outputs (/output/...)
-  - Transparent Step-by-Step Pipeline API:
+  - Transparent Step-by-Step Pipeline API (supporting 3x3 9-part & 4x4 16-part grids + 1K / 4K 4096x4096):
       1. POST /api/step1_generate_image -> Calls gemini-nano-banana-2.1 (Text-to-Image when no attachment; Image-to-Image when attachment uploaded)
-      2. POST /api/step2_slice_and_matte -> Adaptive Valley Slicing + BFS Matting + Halo Cleaning -> 9 RGBA parts + Matted Contact Sheet
+      2. POST /api/step2_slice_and_matte -> Adaptive Valley Slicing + BFS Matting + Halo Cleaning -> 9 or 16 RGBA parts + Matted Contact Sheet
       3. POST /api/step3_rig_and_motions -> Unified Multimodal Call to gemini-3.8-flash with (Sliced/Matted Images + User Prompt) -> Rigging + Physics + Custom Motion .motion3.json files
   - Unified POST /api/generate endpoint (runs Step 1 -> Step 2 -> Step 3 end-to-end)
   - GET /api/ping health check
@@ -16,17 +16,25 @@ import json
 import time
 import base64
 import traceback
-from http.server import SimpleHTTPRequestHandler
+from http.server import SimpleHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
-from http.server import HTTPServer
 from typing import Dict, Any
 from PIL import Image
 
 from ..core import Banano2Live2D
 from ..sdk.client import DEFAULT_API_KEY, DEFAULT_BASE_URL
-from ..prompts.engine import build_live2d_grid_prompt, build_image_to_live2d_prompt, CHARACTER_PRESETS
+from ..prompts.engine import (
+    build_live2d_grid_prompt,
+    build_image_to_live2d_prompt,
+    normalize_grid_spec,
+    CHARACTER_PRESETS,
+)
 from ..cutter.slicer import slice_3x3_grid
-from ..rigger.gemini_rigger import build_matted_contact_sheet, COMPONENT_ORDER
+from ..rigger.gemini_rigger import (
+    build_matted_contact_sheet,
+    COMPONENT_ORDER_3X3,
+    COMPONENT_ORDER_4X4,
+)
 from ..rigger.model_builder import build_live2d_model_package, pack_texture_atlas
 from .exporter import export_model_zip
 
@@ -45,19 +53,23 @@ def file_to_data_url(path: str, mime: str = "image/png") -> str:
     return f"data:{mime};base64,{b64}"
 
 
-def load_parts_data_from_disk(parts_dir: str) -> Dict[str, Dict[str, Any]]:
+def load_parts_data_from_disk(parts_dir: str, grid: str = "3x3") -> Dict[str, Dict[str, Any]]:
     """Reload sliced RGBA parts from disk if not in memory cache."""
+    grid_mode = normalize_grid_spec(grid)
+    order = COMPONENT_ORDER_4X4 if grid_mode == "4x4" else COMPONENT_ORDER_3X3
+    grid_n = 4 if grid_mode == "4x4" else 3
     parts_data: Dict[str, Dict[str, Any]] = {}
-    for idx, name in enumerate(COMPONENT_ORDER):
+    for idx, name in enumerate(order):
         pfile = os.path.join(parts_dir, f"{name}.png")
         if os.path.isfile(pfile):
             img = Image.open(pfile).convert("RGBA")
-            r, c = divmod(idx, 3)
+            r, c = divmod(idx, grid_n)
             parts_data[name] = {
                 "image": img,
                 "cell": (r, c),
                 "bbox": (0, 0, img.width, img.height),
                 "size": img.size,
+                "grid": grid_mode,
             }
     return parts_data
 
@@ -85,6 +97,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                     "image": "gemini-nano-banana-2.1",
                     "multimodal_llm": "gemini-3.8-flash",
                 },
+                "supported_grids": ["3x3", "4x4"],
+                "supported_resolutions": ["1024x1024", "4096x4096"],
                 "pipeline": [
                     "step1_generate_image",
                     "step2_slice_and_matte",
@@ -126,10 +140,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
 
     def _handle_step1_generate_image(self):
         """
-        Stage 1: Call gemini-nano-banana-2.1 to generate the single 3x3 component sheet:
+        Stage 1: Call gemini-nano-banana-2.1 to generate the single 3x3 or 4x4 component sheet (1K or 4K 4096x4096):
           - If NO attachment is provided -> Text-to-Image (文生图) strictly from user's prompt.
-          - If attachment IS provided -> Image-to-Image (图生图) using attachment + user's prompt
-            (unless attachment_mode == 'grid_sheet' where user explicitly wants to slice an existing 3x3 sheet).
+          - If attachment IS provided -> Image-to-Image (图生图) using attachment + user's prompt.
         """
         t0 = time.time()
         try:
@@ -138,11 +151,12 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             base_url = (req_data.get("base_url") or DEFAULT_BASE_URL).strip()
             prompt = (req_data.get("prompt") or "").strip()
             raw_preset = req_data.get("preset")
-            # Only use preset if user did not enter custom text or explicitly selected a preset without overriding text
             preset = raw_preset if (not prompt and raw_preset) else None
             attachment_b64 = req_data.get("attachment")
             attachment_mode = req_data.get("attachment_mode") or "reference"
             char_name = (req_data.get("character_name") or f"char_{int(time.time())}").strip()
+            grid_mode = normalize_grid_spec(req_data.get("grid") or "3x3")
+            is_4k = bool(req_data.get("is_4k", False))
 
             output_dir = os.path.join(self.project_root, "output", char_name)
             os.makedirs(output_dir, exist_ok=True)
@@ -155,42 +169,47 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             )
 
             if attachment_b64 and attachment_mode == "grid_sheet":
-                sheet_path = os.path.join(output_dir, "component_3x3_sheet.png")
+                sheet_path = os.path.join(output_dir, f"component_{grid_mode}_sheet.png")
                 raw_b64 = attachment_b64.split(",", 1)[-1]
                 with open(sheet_path, "wb") as f:
                     f.write(base64.b64decode(raw_b64))
                 sheet_mime = "image/png"
-                prompt_used = "[Uploaded 3x3 Grid Sheet - Direct Slice Mode]"
+                prompt_used = f"[Uploaded {grid_mode} Grid Sheet - Direct Slice Mode]"
                 called_img_model = False
                 generation_mode = "direct_grid_upload"
             elif attachment_b64:
-                # Image-to-Image (图生图): attachment provided
-                sheet_path = os.path.join(output_dir, "component_3x3_sheet.jpg")
-                prompt_used = build_image_to_live2d_prompt(reference_hint=prompt)
-                print(f"[Studio Step 1] Mode=Image-to-Image (图生图) | char={char_name} | prompt={prompt[:80]}")
+                sheet_path = os.path.join(output_dir, f"component_{grid_mode}_sheet.jpg")
+                prompt_used = build_image_to_live2d_prompt(reference_hint=prompt, grid=grid_mode, is_4k=is_4k)
+                print(f"[Studio Step 1] Mode=Image-to-Image (图生图) | grid={grid_mode} | 4K={is_4k} | char={char_name}")
                 engine.generate_component_sheet(
                     prompt=prompt,
                     preset=None,
                     reference_image=attachment_b64,
                     output_path=sheet_path,
+                    grid=grid_mode,
+                    is_4k=is_4k,
                 )
                 sheet_mime = "image/jpeg"
                 called_img_model = True
                 generation_mode = "image_to_image"
             else:
-                # Text-to-Image (文生图): NO attachment provided
-                sheet_path = os.path.join(output_dir, "component_3x3_sheet.jpg")
-                prompt_used = build_live2d_grid_prompt(character_description=prompt, preset=preset)
-                print(f"[Studio Step 1] Mode=Text-to-Image (文生图) | char={char_name} | prompt={prompt[:80]}")
+                sheet_path = os.path.join(output_dir, f"component_{grid_mode}_sheet.jpg")
+                prompt_used = build_live2d_grid_prompt(character_description=prompt, preset=preset, grid=grid_mode, is_4k=is_4k)
+                print(f"[Studio Step 1] Mode=Text-to-Image (文生图) | grid={grid_mode} | 4K={is_4k} | char={char_name}")
                 engine.generate_component_sheet(
                     prompt=prompt,
                     preset=preset,
                     reference_image=None,
                     output_path=sheet_path,
+                    grid=grid_mode,
+                    is_4k=is_4k,
                 )
                 sheet_mime = "image/jpeg"
                 called_img_model = True
                 generation_mode = "text_to_image"
+
+            with Image.open(sheet_path) as im:
+                sheet_res = list(im.size)
 
             sheet_data_url = file_to_data_url(sheet_path, sheet_mime)
             elapsed = round(time.time() - t0, 2)
@@ -199,6 +218,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 "ok": True,
                 "step": 1,
                 "character_name": char_name,
+                "grid": grid_mode,
+                "is_4k": is_4k,
+                "sheet_resolution": sheet_res,
                 "generation_mode": generation_mode,
                 "called_img_model": called_img_model,
                 "img_model": "gemini-nano-banana-2.1",
@@ -218,17 +240,16 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
 
     def _handle_step2_slice_and_matte(self):
         """
-        Stage 2: Slice the 3x3 component sheet via Adaptive Valley Slicing + Exterior BFS Matting
-        + see-through Seam Cleaning, and build the Matted 9-Part Contact Sheet for Stage 3.
+        Stage 2: Slice the 3x3 (9-part) or 4x4 (16-part) component sheet via Adaptive Valley Slicing
+        + Exterior BFS Matting + see-through Seam Cleaning, and build the Matted Contact Sheet for Stage 3.
         """
         t0 = time.time()
         try:
             req_data = self._read_json_body()
             char_name = (req_data.get("character_name") or f"char_{int(time.time())}").strip()
+            grid_mode = normalize_grid_spec(req_data.get("grid") or "3x3")
             sheet_path = req_data.get("sheet_path")
-            attachment_b64 = req_data.get("sheet_data_url") or req_data.get("attachment")
-            tolerance = int(req_data.get("tolerance") or 28)
-            clean_bleed = bool(req_data.get("clean_bleed", True))
+            attachment_b64 = req_data.get("attachment")
 
             output_dir = os.path.join(self.project_root, "output", char_name)
             parts_dir = os.path.join(output_dir, "parts")
@@ -237,55 +258,42 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             os.makedirs(textures_dir, exist_ok=True)
 
             if not sheet_path or not os.path.isfile(sheet_path):
-                cand_jpg = os.path.join(output_dir, "component_3x3_sheet.jpg")
-                cand_png = os.path.join(output_dir, "component_3x3_sheet.png")
-                if os.path.isfile(cand_jpg):
-                    sheet_path = cand_jpg
-                elif os.path.isfile(cand_png):
-                    sheet_path = cand_png
+                candidate = os.path.join(output_dir, f"component_{grid_mode}_sheet.jpg")
+                if os.path.isfile(candidate):
+                    sheet_path = candidate
                 elif attachment_b64:
-                    sheet_path = os.path.join(output_dir, "component_3x3_sheet.png")
+                    sheet_path = os.path.join(output_dir, f"component_{grid_mode}_sheet.png")
                     raw_b64 = attachment_b64.split(",", 1)[-1]
                     with open(sheet_path, "wb") as f:
                         f.write(base64.b64decode(raw_b64))
+                else:
+                    raise FileNotFoundError(f"Component sheet not found for {char_name}")
 
-            if not sheet_path or not os.path.isfile(sheet_path):
-                # Only allow demo_fallback if explicitly requested for demo character 'banerwei_sailor'
-                if char_name == "banerwei_sailor":
-                    demo_fallback = os.path.join(self.project_root, "examples", "character_3x3_grid.jpg")
-                    if os.path.isfile(demo_fallback):
-                        sheet_path = demo_fallback
-                if not sheet_path or not os.path.isfile(sheet_path):
-                    raise FileNotFoundError(
-                        f"3x3 sheet image not found for '{char_name}'. Please run Step 1 (gemini-nano-banana-2.1) first."
-                    )
-
-            print(f"[Studio Step 2] Slicing & Matting sheet: {sheet_path} (char={char_name}, tol={tolerance})")
             parts_data = slice_3x3_grid(
                 image_path=sheet_path,
                 output_dir=parts_dir,
-                bg_tolerance=tolerance,
                 apply_matting=True,
-                apply_cleaning=clean_bleed,
+                apply_cleaning=True,
+                grid=grid_mode,
             )
             _SESSION_PARTS_CACHE[char_name] = parts_data
 
-            # Build Matted 9-Part Contact Sheet (sent to gemini-3.8-flash in Stage 3)
             matted_sheet_path = os.path.join(output_dir, "matted_contact_sheet.jpg")
             matted_sheet_uri, parts_summary = build_matted_contact_sheet(
-                parts_data=parts_data,
+                parts_data,
                 output_path=matted_sheet_path,
+                grid=grid_mode,
             )
 
-            # Also pack Texture Atlas preview
             parts_images = {k: v["image"] for k, v in parts_data.items()}
             atlas_img, _ = pack_texture_atlas(parts_images, atlas_size=1024)
             atlas_path = os.path.join(textures_dir, "texture_00.png")
             atlas_img.save(atlas_path)
             atlas_data_url = file_to_data_url(atlas_path, "image/png")
 
+            order = COMPONENT_ORDER_4X4 if grid_mode == "4x4" else COMPONENT_ORDER_3X3
             parts_b64: Dict[str, str] = {}
-            for pname in COMPONENT_ORDER:
+            for pname in order:
                 pfile = os.path.join(parts_dir, f"{pname}.png")
                 if os.path.isfile(pfile):
                     parts_b64[pname] = file_to_data_url(pfile, "image/png")
@@ -295,11 +303,14 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 "ok": True,
                 "step": 2,
                 "character_name": char_name,
+                "grid": grid_mode,
+                "parts_count": len(parts_b64),
                 "sheet_path": os.path.abspath(sheet_path),
                 "parts_b64": parts_b64,
                 "parts_summary": parts_summary,
                 "matted_sheet_data_url": matted_sheet_uri,
                 "atlas_data_url": atlas_data_url,
+                "atlas_resolution": list(atlas_img.size),
                 "elapsed_sec": elapsed,
             })
         except Exception as e:
@@ -325,6 +336,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             base_url = (req_data.get("base_url") or DEFAULT_BASE_URL).strip()
             char_name = (req_data.get("character_name") or f"char_{int(time.time())}").strip()
             prompt = (req_data.get("prompt") or "Azur Lane anime character").strip()
+            grid_mode = normalize_grid_spec(req_data.get("grid") or "3x3")
 
             output_dir = os.path.join(self.project_root, "output", char_name)
             parts_dir = os.path.join(output_dir, "parts")
@@ -332,7 +344,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
 
             parts_data = _SESSION_PARTS_CACHE.get(char_name)
             if not parts_data:
-                parts_data = load_parts_data_from_disk(parts_dir)
+                parts_data = load_parts_data_from_disk(parts_dir, grid=grid_mode)
             if not parts_data:
                 raise RuntimeError(f"No sliced parts found for {char_name}. Please run Step 2 first.")
 
@@ -343,9 +355,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 llm_model="gemini-3.8-flash",
             )
 
-            sheet_fallback = os.path.join(output_dir, "component_3x3_sheet.jpg")
+            sheet_fallback = os.path.join(output_dir, f"component_{grid_mode}_sheet.jpg")
             if not os.path.isfile(sheet_fallback):
-                sheet_fallback = os.path.join(output_dir, "component_3x3_sheet.png")
+                sheet_fallback = os.path.join(output_dir, "component_3x3_sheet.jpg")
 
             rig_config = engine.rigger.rig(
                 grid_image_path=sheet_fallback if os.path.isfile(sheet_fallback) else matted_sheet_path,
@@ -353,6 +365,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 model="gemini-3.8-flash",
                 parts_data=parts_data,
                 matted_sheet_path=matted_sheet_path,
+                grid=grid_mode,
             )
 
             result = build_live2d_model_package(
@@ -389,6 +402,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 "ok": True,
                 "step": 3,
                 "character_name": char_name,
+                "grid": grid_mode,
                 "llm_model": "gemini-3.8-flash",
                 "output_dir": os.path.abspath(output_dir),
                 "zip_url": f"/output/{char_name}.zip",
@@ -424,6 +438,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             attachment_b64 = req_data.get("attachment")
             attachment_mode = req_data.get("attachment_mode") or "reference"
             char_name = (req_data.get("character_name") or f"char_{int(time.time())}").strip()
+            grid_mode = normalize_grid_spec(req_data.get("grid") or "3x3")
+            is_4k = bool(req_data.get("is_4k", False))
 
             output_dir = os.path.join(self.project_root, "output", char_name)
             os.makedirs(output_dir, exist_ok=True)
@@ -436,7 +452,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             )
 
             if attachment_b64 and attachment_mode == "grid_sheet":
-                sheet_path = os.path.join(output_dir, "component_3x3_sheet.png")
+                sheet_path = os.path.join(output_dir, f"component_{grid_mode}_sheet.png")
                 raw_b64 = attachment_b64.split(",", 1)[-1]
                 with open(sheet_path, "wb") as f:
                     f.write(base64.b64decode(raw_b64))
@@ -446,6 +462,7 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                     character_hint=prompt or "Azur Lane anime character",
                     output_dir=output_dir,
                     serve=False,
+                    grid=grid_mode,
                 )
             else:
                 result = engine.create_live2d(
@@ -455,8 +472,10 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                     character_name=char_name,
                     output_dir=output_dir,
                     serve=False,
+                    grid=grid_mode,
+                    is_4k=is_4k,
                 )
-                sheet_path = os.path.join(output_dir, "component_3x3_sheet.jpg")
+                sheet_path = os.path.join(output_dir, f"component_{grid_mode}_sheet.jpg")
 
             with open(result["character_data"], "r", encoding="utf-8") as f:
                 character_data = json.load(f)
@@ -491,6 +510,8 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
             self._send_json(200, {
                 "ok": True,
                 "character_name": char_name,
+                "grid": grid_mode,
+                "is_4k": is_4k,
                 "output_dir": os.path.abspath(output_dir),
                 "zip_url": f"/output/{char_name}.zip",
                 "sheet_data_url": sheet_data_url,

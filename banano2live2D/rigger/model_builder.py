@@ -20,8 +20,16 @@ def pack_texture_atlas(
 ) -> Tuple[Image.Image, Dict[str, Dict[str, Any]]]:
     """
     Pack individual component images into a single texture atlas (texture_00.png).
+    Automatically selects 2048x2048 or 4096x4096 for 4x4 (16-part) and 4K UHD textures.
     Returns: (atlas_image, uv_mapping)
     """
+    total_area = sum(img.width * img.height for img in parts_dict.values())
+    max_side = max((max(img.width, img.height) for img in parts_dict.values()), default=256)
+    if total_area > 1024 * 1024 * 0.65 or len(parts_dict) > 9 or max_side > 512:
+        atlas_size = max(atlas_size, 2048)
+    if total_area > 2048 * 2048 * 0.65 or max_side > 900:
+        atlas_size = max(atlas_size, 4096)
+
     atlas = Image.new("RGBA", (atlas_size, atlas_size), (0, 0, 0, 0))
     mapping: Dict[str, Dict[str, Any]] = {}
 
@@ -34,12 +42,19 @@ def pack_texture_atlas(
 
     for name, img in sorted_items:
         w, h = img.size
+        while w + padding * 2 > atlas_size or h + padding * 2 > atlas_size:
+            larger_size = atlas_size * 2
+            larger_atlas = Image.new("RGBA", (larger_size, larger_size), (0, 0, 0, 0))
+            larger_atlas.paste(atlas, (0, 0))
+            atlas = larger_atlas
+            atlas_size = larger_size
+
         if curr_x + w + padding > atlas_size:
             curr_x = padding
             curr_y += shelf_h + padding
             shelf_h = 0
 
-        if curr_y + h + padding > atlas_size:
+        while curr_y + h + padding > atlas_size:
             larger_size = atlas_size * 2
             larger_atlas = Image.new("RGBA", (larger_size, larger_size), (0, 0, 0, 0))
             larger_atlas.paste(atlas, (0, 0))
@@ -52,17 +67,20 @@ def pack_texture_atlas(
             "y": curr_y,
             "width": w,
             "height": h,
-            "uv": {
-                "u0": round(curr_x / atlas_size, 6),
-                "v0": round(curr_y / atlas_size, 6),
-                "u1": round((curr_x + w) / atlas_size, 6),
-                "v1": round((curr_y + h) / atlas_size, 6),
-            },
         }
 
         curr_x += w + padding
         if h > shelf_h:
             shelf_h = h
+
+    for name, rect in mapping.items():
+        rx, ry, rw, rh = rect["x"], rect["y"], rect["width"], rect["height"]
+        rect["uv"] = {
+            "u0": round(rx / atlas_size, 6),
+            "v0": round(ry / atlas_size, 6),
+            "u1": round((rx + rw) / atlas_size, 6),
+            "v1": round((ry + rh) / atlas_size, 6),
+        }
 
     return atlas, mapping
 

@@ -594,9 +594,24 @@
             </div>
           </div>
 
+          <!-- 网格规格 (3x3 九宫格 / 4x4 十六宫格) 与 4K 超清请求配置栏 -->
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; background:rgba(15,23,42,0.78); border:1px solid rgba(56,189,248,0.32); border-radius:8px; padding:7px 10px;">
+            <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:240px;">
+              <span style="font-size:11px; font-weight:700; color:#38bdf8; white-space:nowrap;">🧩 拆件规格:</span>
+              <select id="gridLayoutSelect" style="font-size:11px; padding:4px 8px; flex:1; background:rgba(2,6,23,0.9); color:#f8fafc; border:1px solid rgba(56,189,248,0.45); border-radius:6px;">
+                <option value="4x4" selected>🔥 4×4 十六宫格 (16件高灵活拆件：含侧发/眉毛/裙摆/双腿/兽耳/尾巴/道具)</option>
+                <option value="3x3">⚡ 3×3 九宫格 (9件标准拆件：后发/素体头/前发/睁闭眼/嘴/躯干/双臂)</option>
+              </select>
+            </div>
+            <label style="display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700; color:#fcd34d; cursor:pointer; background:rgba(245,158,11,0.14); border:1px solid rgba(245,158,11,0.45); padding:4px 10px; border-radius:6px; white-space:nowrap;">
+              <input type="checkbox" id="chk4KMode" checked style="accent-color:#f59e0b; cursor:pointer;">
+              <span>🖼️ 4K 超清请求 (4096×4096 UHD)</span>
+            </label>
+          </div>
+
           <!-- 实时文生图 / 图生图模式指示器 -->
           <div id="genModeIndicator" style="font-size:11px; padding:6px 10px; border-radius:6px; background:rgba(56,189,248,0.10); border:1px solid rgba(56,189,248,0.30); color:#bae6fd; display:flex; align-items:center; justify-content:space-between;">
-            <span id="genModeText">📝 <b>当前模式：文生图 (Text-to-Image)</b> — 未上传附件，将直接根据您的文本提示词调用 <code>gemini-nano-banana-2.1</code> 生成全新 3×3 九宫格组件图</span>
+            <span id="genModeText">📝 <b>当前模式：文生图 (Text-to-Image) [4×4 十六宫格 (16部件) · 4K 超清 (4096×4096)]</b> — 未上传附件，将直接根据文本提示词调用 <code>gemini-nano-banana-2.1</code> 生成全新组件大图</span>
           </div>
 
           <!-- 发送并生成按钮 -->
@@ -792,21 +807,48 @@
   </div>
 
   <script>
-    const COMPONENT_KEYS = [
+    const COMPONENT_KEYS_3X3 = [
       'back_hair', 'head_base', 'front_hair',
       'eyes_open', 'eyes_closed', 'mouth',
       'body_torso', 'arm_left', 'arm_right'
     ];
+    const COMPONENT_KEYS_4X4 = [
+      'back_hair', 'head_base', 'front_hair', 'side_hair',
+      'eyes_open', 'eyes_closed', 'eyebrows', 'mouth',
+      'body_torso', 'skirt_lower', 'arm_left', 'arm_right',
+      'legs_stockings', 'headwear_ears', 'back_tail_wings', 'hand_prop_effect'
+    ];
+    let COMPONENT_KEYS = COMPONENT_KEYS_3X3.slice();
+
+    function getSelectedGridMode() {
+      const el = document.getElementById('gridLayoutSelect');
+      return el ? el.value : '4x4';
+    }
+    function getSelected4KMode() {
+      const el = document.getElementById('chk4KMode');
+      return el ? Boolean(el.checked) : true;
+    }
+    function getComponentKeysForGrid(gridMode) {
+      return gridMode === '4x4' ? COMPONENT_KEYS_4X4 : COMPONENT_KEYS_3X3;
+    }
+
     const COMPONENT_TITLES = {
-      'back_hair': '后发+双马尾 (back_hair)',
+      'back_hair': '后发主体 (back_hair)',
       'head_base': '素体头颈 (head_base)',
       'front_hair': '中空前刘海 (front_hair)',
+      'side_hair': '左右侧发鬓角 (side_hair)',
       'eyes_open': '常开双眼 (eyes_open)',
       'eyes_closed': '微笑闭眼 (eyes_closed)',
+      'eyebrows': '独立双眉 (eyebrows)',
       'mouth': '嘴型部件 (mouth)',
-      'body_torso': '无臂躯干服饰 (body_torso)',
+      'body_torso': '无臂上衣躯干 (body_torso)',
+      'skirt_lower': '高飘裙摆下装 (skirt_lower)',
       'arm_left': '独立左臂 (arm_left)',
-      'arm_right': '独立右臂比耶 (arm_right)',
+      'arm_right': '独立右臂 (arm_right)',
+      'legs_stockings': '双腿长袜鞋履 (legs_stockings)',
+      'headwear_ears': '头饰/兽耳 (headwear_ears)',
+      'back_tail_wings': '背后尾巴/翅膀 (back_tail_wings)',
+      'hand_prop_effect': '手持道具/特效 (hand_prop_effect)',
     };
 
     const DEFAULT_RIG = {
@@ -823,6 +865,30 @@
         eyes_open:  { z_index: 50, center: [500, 272], scale: 0.44, pivot: [0.5, 0.50] },
         eyes_closed:{ z_index: 51, center: [500, 272], scale: 0.44, pivot: [0.5, 0.50] },
         front_hair: { z_index: 60, center: [500, 244], scale: 0.82, pivot: [0.5, 0.32] },
+      }
+    };
+
+    const DEFAULT_RIG_4X4 = {
+      character_name: "custom_4x4",
+      architecture: "Azur Lane Cubism 3 (4x4 16-Part High-Flexibility Standard)",
+      canvas: { width: 1000, height: 1000 },
+      parts: {
+        back_tail_wings: { z_index: 5,  center: [505, 520], scale: 0.48, pivot: [0.5, 0.50] },
+        back_hair:       { z_index: 10, center: [500, 265], scale: 0.84, pivot: [0.5, 0.35] },
+        legs_stockings:  { z_index: 15, center: [500, 775], scale: 0.88, pivot: [0.5, 0.12] },
+        head_base:       { z_index: 20, center: [500, 256], scale: 0.78, pivot: [0.5, 0.86] },
+        arm_left:        { z_index: 25, center: [410, 468], scale: 0.60, pivot: [0.82, 0.10] },
+        arm_right:       { z_index: 26, center: [588, 462], scale: 0.64, pivot: [0.28, 0.25] },
+        body_torso:      { z_index: 30, center: [500, 455], scale: 0.80, pivot: [0.5, 0.25] },
+        skirt_lower:     { z_index: 32, center: [500, 552], scale: 0.82, pivot: [0.5, 0.15] },
+        mouth:           { z_index: 40, center: [500, 314], scale: 0.27, pivot: [0.5, 0.50] },
+        eyes_open:       { z_index: 50, center: [500, 272], scale: 0.44, pivot: [0.5, 0.50] },
+        eyes_closed:     { z_index: 51, center: [500, 272], scale: 0.44, pivot: [0.5, 0.50] },
+        eyebrows:        { z_index: 55, center: [500, 240], scale: 0.42, pivot: [0.5, 0.50] },
+        side_hair:       { z_index: 58, center: [500, 295], scale: 0.80, pivot: [0.5, 0.22] },
+        front_hair:      { z_index: 60, center: [500, 242], scale: 0.82, pivot: [0.5, 0.32] },
+        headwear_ears:   { z_index: 65, center: [500, 178], scale: 0.62, pivot: [0.5, 0.80] },
+        hand_prop_effect:{ z_index: 70, center: [642, 448], scale: 0.50, pivot: [0.35, 0.75] },
       }
     };
 
@@ -935,21 +1001,25 @@
       const txt = document.getElementById('genModeText');
       if (!box || !txt) return;
       const mode = document.getElementById('attachModeSelect').value;
+      const gridMode = getSelectedGridMode();
+      const is4K = getSelected4KMode();
+      const gridTag = gridMode === '4x4' ? '4×4 十六宫格 (16部件)' : '3×3 九宫格 (9部件)';
+      const resTag = is4K ? '4K 超清 (4096×4096)' : '标准高清';
       if (!attachedDataUrl) {
         box.style.background = 'rgba(56,189,248,0.10)';
         box.style.borderColor = 'rgba(56,189,248,0.30)';
         box.style.color = '#bae6fd';
-        txt.innerHTML = '📝 <b>当前模式：文生图 (Text-to-Image)</b> — 未上传附件，将直接根据您的文本提示词调用 <code>gemini-nano-banana-2.1</code> 生成全新 3×3 九宫格组件图';
+        txt.innerHTML = '📝 <b>当前模式：文生图 (Text-to-Image) [' + gridTag + ' · ' + resTag + ']</b> — 未上传附件，将直接根据文本提示词调用 <code>gemini-nano-banana-2.1</code> 生成全新组件大图';
       } else if (mode === 'grid_sheet') {
         box.style.background = 'rgba(16,185,129,0.12)';
         box.style.borderColor = 'rgba(16,185,129,0.40)';
         box.style.color = '#a7f3d0';
-        txt.innerHTML = '✂️ <b>当前模式：直接切分已有 3×3 九宫格</b> — 将直接切分您上传的九宫格图并交由 <code>gemini-3.8-flash</code> 生成骨骼与动作';
+        txt.innerHTML = '✂️ <b>当前模式：直接切分已有 [' + gridTag + ']</b> — 将直接切分您上传的宫格图并交由 <code>gemini-3.8-flash</code> 生成骨骼与动作';
       } else {
         box.style.background = 'rgba(168,85,247,0.14)';
         box.style.borderColor = 'rgba(168,85,247,0.45)';
         box.style.color = '#e9d5ff';
-        txt.innerHTML = '🖼️ <b>当前模式：图生图 (Image-to-Image)</b> — 已上传参考图，将调用 <code>gemini-nano-banana-2.1</code> 结合参考图与您的提示词生成 3×3 九宫格组件图';
+        txt.innerHTML = '🖼️ <b>当前模式：图生图 (Image-to-Image) [' + gridTag + ' · ' + resTag + ']</b> — 已上传参考图，将调用 <code>gemini-nano-banana-2.1</code> 结合参考图生成组件大图';
       }
     }
 
@@ -984,6 +1054,8 @@
       if (attachInput.files.length) handleAttachmentFile(attachInput.files[0]);
     });
     document.getElementById('attachModeSelect').addEventListener('change', updateGenModeIndicator);
+    document.getElementById('gridLayoutSelect').addEventListener('change', updateGenModeIndicator);
+    document.getElementById('chk4KMode').addEventListener('change', updateGenModeIndicator);
 
     attachDropZone.addEventListener('dragover', (e) => {
       e.preventDefault();
@@ -1050,9 +1122,13 @@
       return bestPos;
     }
 
-    function sliceAndMatteGrid(img, tolerance, cleanBleed) {
+    function sliceAndMatteGrid(img, tolerance, cleanBleed, gridMode) {
       tolerance = tolerance || 28;
       if (cleanBleed === undefined) cleanBleed = true;
+      gridMode = gridMode || getSelectedGridMode();
+      const gridN = gridMode === '4x4' ? 4 : 3;
+      const keysList = getComponentKeysForGrid(gridMode);
+      COMPONENT_KEYS = keysList.slice();
 
       const W = img.width, H = img.height;
       const fullCanvas = document.createElement('canvas');
@@ -1075,19 +1151,30 @@
         }
       }
 
-      const y1 = findLowestInkValley(rowInk, Math.floor(H * 0.28), Math.floor(H * 0.48));
-      const y2 = findLowestInkValley(rowInk, Math.floor(H * 0.52), Math.floor(H * 0.72));
-      const x1 = findLowestInkValley(colInk, Math.floor(W * 0.26), Math.floor(W * 0.46));
-      const x2 = findLowestInkValley(colInk, Math.floor(W * 0.55), Math.floor(W * 0.82));
-
-      const yBounds = [0, y1, y2, H];
-      const xBounds = [0, x1, x2, W];
+      let yBounds, xBounds;
+      if (gridN === 4) {
+        const y1 = findLowestInkValley(rowInk, Math.floor(H * 0.19), Math.floor(H * 0.31));
+        const y2 = findLowestInkValley(rowInk, Math.floor(H * 0.44), Math.floor(H * 0.56));
+        const y3 = findLowestInkValley(rowInk, Math.floor(H * 0.69), Math.floor(H * 0.81));
+        const x1 = findLowestInkValley(colInk, Math.floor(W * 0.19), Math.floor(W * 0.31));
+        const x2 = findLowestInkValley(colInk, Math.floor(W * 0.44), Math.floor(W * 0.56));
+        const x3 = findLowestInkValley(colInk, Math.floor(W * 0.69), Math.floor(W * 0.81));
+        yBounds = [0, y1, y2, y3, H];
+        xBounds = [0, x1, x2, x3, W];
+      } else {
+        const y1 = findLowestInkValley(rowInk, Math.floor(H * 0.28), Math.floor(H * 0.48));
+        const y2 = findLowestInkValley(rowInk, Math.floor(H * 0.52), Math.floor(H * 0.72));
+        const x1 = findLowestInkValley(colInk, Math.floor(W * 0.26), Math.floor(W * 0.46));
+        const x2 = findLowestInkValley(colInk, Math.floor(W * 0.55), Math.floor(W * 0.82));
+        yBounds = [0, y1, y2, H];
+        xBounds = [0, x1, x2, W];
+      }
       const slicedResults = {};
 
       let idx = 0;
-      for (let r = 0; r < 3; r++) {
-        for (let c = 0; c < 3; c++) {
-          const key = COMPONENT_KEYS[idx];
+      for (let r = 0; r < gridN; r++) {
+        for (let c = 0; c < gridN; c++) {
+          const key = keysList[idx];
           const cellX0 = xBounds[c] + 3;
           const cellY0 = yBounds[r] + 3;
           const cellW = Math.max(1, xBounds[c + 1] - xBounds[c] - 6);
@@ -1258,19 +1345,26 @@
       return slicedResults;
     }
 
-    function updateComponentsGallery(sliced) {
+    function updateComponentsGallery(sliced, gridMode) {
+      const keys = Object.keys(sliced || {});
+      const is4x4 = (gridMode === '4x4') || keys.length > 9 || keys.includes('skirt_lower');
+      COMPONENT_KEYS = is4x4 ? COMPONENT_KEYS_4X4.slice() : COMPONENT_KEYS_3X3.slice();
       const grid = document.getElementById('componentsGrid');
+      grid.style.gridTemplateColumns = is4x4 ? 'repeat(4, 1fr)' : 'repeat(3, 1fr)';
       grid.innerHTML = '';
+      let validCount = 0;
       COMPONENT_KEYS.forEach(k => {
         const item = sliced[k];
+        if (item && item.dataUrl) validCount++;
         const card = document.createElement('div');
         card.className = 'component-card';
         card.innerHTML =
-          '<img class="component-thumb" src="' + (item ? item.dataUrl : '') + '" alt="' + k + '">' +
-          '<div class="component-label">' + COMPONENT_TITLES[k] + '</div>';
+          '<img class="component-thumb" style="height:' + (is4x4 ? '52px' : '64px') + ';" src="' + (item ? item.dataUrl : '') + '" alt="' + k + '">' +
+          '<div class="component-label">' + (COMPONENT_TITLES[k] || k) + '</div>';
         grid.appendChild(card);
       });
-      document.getElementById('partsStatus').innerText = '已解析 9/9 部件';
+      const total = COMPONENT_KEYS.length;
+      document.getElementById('partsStatus').innerText = '已解析 ' + validCount + '/' + total + ' 部件 (' + (is4x4 ? '4×4' : '3×3') + ')';
     }
 
     async function assembleModel(sliced) {
@@ -1618,10 +1712,22 @@
           offsetX += params.ParamAngleX * 0.58 + hairFrontPx;
           offsetY += params.ParamAngleY * 0.42;
           rotation += (params.ParamAngleZ + params.ParamAngleX * 0.14 + hairSideDeg) * Math.PI / 180;
+        } else if (key === 'side_hair') {
+          offsetX += params.ParamAngleX * 0.50 + hairFrontPx * 0.85;
+          offsetY += params.ParamAngleY * 0.36;
+          rotation += (params.ParamAngleZ * 1.05 + hairSideDeg * 1.35) * Math.PI / 180;
+        } else if (key === 'headwear_ears') {
+          offsetX += params.ParamAngleX * 0.64 + hairFrontPx * 0.55;
+          offsetY += params.ParamAngleY * 0.46 - Math.abs(params.ParamBreath) * 1.5;
+          rotation += (params.ParamAngleZ * 1.12 + hairSideDeg * 0.9) * Math.PI / 180;
         } else if (key === 'back_hair') {
           offsetX += -params.ParamAngleX * 0.30 + hairBackPx;
           offsetY += -params.ParamAngleY * 0.22;
           rotation += (params.ParamAngleZ * 0.85 - params.ParamAngleX * 0.10) * Math.PI / 180;
+        } else if (key === 'back_tail_wings') {
+          offsetX += -params.ParamBodyAngleX * 0.45 + hairBackPx * 1.25;
+          offsetY += Math.sin(now * 0.0032) * 3.5;
+          rotation += (params.ParamBodyAngleZ * 0.8 + hairSideDeg * 1.6) * Math.PI / 180;
         } else if (key === 'head_base') {
           offsetX += params.ParamAngleX * 0.40;
           offsetY += params.ParamAngleY * 0.30;
@@ -1630,6 +1736,10 @@
           offsetX += params.ParamAngleX * 0.46 + params.ParamEyeBallX * 6;
           offsetY += params.ParamAngleY * 0.34 - params.ParamEyeBallY * 4.5;
           rotation += params.ParamAngleZ * Math.PI / 180;
+        } else if (key === 'eyebrows') {
+          offsetX += params.ParamAngleX * 0.48;
+          offsetY += params.ParamAngleY * 0.35 - params.ParamMouthOpenY * 3.2 - params.ParamEyeLSmile * 2.0;
+          rotation += params.ParamAngleZ * Math.PI / 180;
         } else if (key === 'mouth') {
           offsetX += params.ParamAngleX * 0.43;
           offsetY += params.ParamAngleY * 0.32;
@@ -1637,10 +1747,22 @@
           scaleY = 0.72 + Math.max(0, params.ParamMouthOpenY) * 0.65;
         } else if (key === 'body_torso') {
           scaleY = 1.0 + params.ParamBreath * 0.014;
+        } else if (key === 'skirt_lower') {
+          offsetX += hairBackPx * 0.45;
+          rotation += (hairSideDeg * 0.65 + params.ParamBodyAngleX * 0.22) * Math.PI / 180;
+          scaleX = 1.0 + params.ParamBreath * 0.012;
+        } else if (key === 'legs_stockings') {
+          offsetX = bodyOffsetX * 0.25;
+          offsetY = -params.ParamBodyAngleY * 0.15;
+          rotation = bodyRot * 0.25;
         } else if (key === 'arm_left') {
           rotation += params.ParamArmLAngle * Math.PI / 180;
         } else if (key === 'arm_right') {
           rotation += params.ParamArmRAngle * Math.PI / 180;
+        } else if (key === 'hand_prop_effect') {
+          offsetX += params.ParamArmRAngle * 0.65;
+          offsetY += Math.sin(now * 0.004) * 4.0 - params.ParamArmRAngle * 0.45;
+          rotation += (params.ParamArmRAngle * 1.15) * Math.PI / 180;
         }
 
         ctx.translate(anchorX + offsetX, anchorY + offsetY);
@@ -1794,18 +1916,22 @@
     }
 
     // Build a 600x600 Matted Contact Sheet from the 9 sliced & matted components (to send to gemini-3.8-flash)
-    async function buildMattedContactSheetDataUrl(sliced) {
-      const cell = 200;
+    async function buildMattedContactSheetDataUrl(sliced, gridMode) {
+      const keys = Object.keys(sliced || {});
+      const is4x4 = (gridMode === '4x4') || keys.length > 9 || keys.includes('skirt_lower');
+      const gridN = is4x4 ? 4 : 3;
+      const keysList = is4x4 ? COMPONENT_KEYS_4X4 : COMPONENT_KEYS_3X3;
+      const cell = is4x4 ? 180 : 200;
       const sheetCanvas = document.createElement('canvas');
-      sheetCanvas.width = cell * 3;
-      sheetCanvas.height = cell * 3;
+      sheetCanvas.width = cell * gridN;
+      sheetCanvas.height = cell * gridN;
       const sCtx = sheetCanvas.getContext('2d');
       sCtx.fillStyle = '#f0f2f7';
       sCtx.fillRect(0, 0, sheetCanvas.width, sheetCanvas.height);
 
-      for (let idx = 0; idx < COMPONENT_KEYS.length; idx++) {
-        const key = COMPONENT_KEYS[idx];
-        const r = Math.floor(idx / 3), c = idx % 3;
+      for (let idx = 0; idx < keysList.length; idx++) {
+        const key = keysList[idx];
+        const r = Math.floor(idx / gridN), c = idx % gridN;
         const x0 = c * cell, y0 = r * cell;
         sCtx.strokeStyle = '#cbd5e1';
         sCtx.strokeRect(x0 + 2, y0 + 2, cell - 4, cell - 4);
@@ -1978,7 +2104,9 @@
               sheet_path: targetSheetPath,
               sheet_data_url: targetSheetDataUrl,
               tolerance: tolerance,
-              clean_bleed: cleanBleed
+              clean_bleed: cleanBleed,
+              grid: getSelectedGridMode(),
+              is_4k: getSelected4KMode()
             })
           });
           const s2Data = await s2Resp.json();
@@ -2010,7 +2138,9 @@
               base_url: baseUrl,
               character_name: targetChar,
               prompt: promptText,
-              parts_summary: partsSummary
+              parts_summary: partsSummary,
+              grid: getSelectedGridMode(),
+              is_4k: getSelected4KMode()
             })
           });
           const s3Data = await s3Resp.json();
@@ -2086,6 +2216,12 @@
       const tolerance = parseInt(document.getElementById('mattingTol').value, 10);
       const cleanBleed = document.getElementById('cleanBleed').checked;
       const attachMode = document.getElementById('attachModeSelect').value;
+      const gridMode = getSelectedGridMode();
+      const is4K = getSelected4KMode();
+      const gridLabelCn = gridMode === '4x4' ? '4×4 十六宫格(16部件)' : '3×3 九宫格(9部件)';
+      const resLabelCn = is4K ? '4K超清(4096×4096)' : '高清';
+      COMPONENT_KEYS = getComponentKeysForGrid(gridMode).slice();
+      activeCharacter = JSON.parse(JSON.stringify(gridMode === '4x4' ? DEFAULT_RIG_4X4 : DEFAULT_RIG));
 
       if (!promptText && !attachedDataUrl) {
         alert('请输入提示词或上传图片附件！');
@@ -2094,7 +2230,7 @@
 
       const isImg2Img = Boolean(attachedDataUrl && attachMode !== 'grid_sheet');
       const isDirectGrid = Boolean(attachedDataUrl && attachMode === 'grid_sheet');
-      const modeLabelCn = isDirectGrid ? '直接切分九宫格' : (isImg2Img ? '图生图 (Image-to-Image)' : '文生图 (Text-to-Image)');
+      const modeLabelCn = (isDirectGrid ? '直接切分' : (isImg2Img ? '图生图' : '文生图')) + ' [' + gridLabelCn + ' · ' + resLabelCn + ']';
 
       btn.disabled = true;
       const startTs = Date.now();
@@ -2132,7 +2268,9 @@
               preset: promptText ? null : currentPreset,
               attachment: attachedDataUrl || null,
               attachment_mode: attachedDataUrl ? attachMode : 'text_to_image',
-              character_name: charName
+              character_name: charName,
+              grid: gridMode,
+              is_4k: is4K
             })
           });
           const s1Data = await s1Resp.json();
@@ -2147,8 +2285,8 @@
           if (s1Data.sheet_data_url) {
             document.getElementById('rawSheetPreview').src = s1Data.sheet_data_url;
           }
-          setStepState(1, 'done', '① 生图模型<br>✅ ' + (isImg2Img ? '图生图完成' : '文生图完成'));
-          log('✅ [步骤1完成] 生图模型 (' + (s1Data.img_model || 'gemini-nano-banana-2.1') + ') 【' + modeLabelCn + '】已返回全新 3×3 九宫格大图！耗时 ' + (s1Data.elapsed_sec || '?') + 's');
+          setStepState(1, 'done', '① 生图模型<br>✅ ' + gridMode + (is4K ? '·4K' : '') + '完成');
+          log('✅ [步骤1完成] 生图模型 (' + (s1Data.img_model || 'gemini-nano-banana-2.1') + ') 【' + modeLabelCn + '】已返回全新 ' + gridLabelCn + ' 大图 (' + (s1Data.resolution || (is4K ? '4096x4096' : '1024x1024')) + ')！耗时 ' + (s1Data.elapsed_sec || '?') + 's');
 
           // =========================================================================
           // BACKEND SEQUENTIAL STEP 2: Adaptive Valley Slicing + BFS Exterior Matting
@@ -2167,7 +2305,9 @@
               sheet_path: s1Data.sheet_path,
               sheet_data_url: s1Data.sheet_data_url,
               tolerance: tolerance,
-              clean_bleed: cleanBleed
+              clean_bleed: cleanBleed,
+              grid: s1Data.grid || gridMode,
+              is_4k: is4K
             })
           });
           const s2Data = await s2Resp.json();
@@ -2197,9 +2337,9 @@
               };
             }
           }
-          updateComponentsGallery(sliced);
-          setStepState(2, 'done', '② 拆分抠图<br>✅ 9部件已抠图');
-          log('✅ [步骤2完成] 9 个语义图层已全部切分并去背完毕！已生成供文本模型审阅的 9 部件抠图合成图。');
+          updateComponentsGallery(sliced, gridMode);
+          setStepState(2, 'done', '② 拆分抠图<br>✅ ' + COMPONENT_KEYS.length + '部件已抠图');
+          log('✅ [步骤2完成] ' + COMPONENT_KEYS.length + ' 个语义图层 (' + gridMode + ') 已全部切分并去背完毕！已生成供文本模型审阅的抠图合成图。');
 
           // =========================================================================
           // BACKEND SEQUENTIAL STEP 3: Send Matted Parts + User Prompt to gemini-3.8-flash
@@ -2218,7 +2358,9 @@
               base_url: baseUrl,
               character_name: s1Data.character_name || charName,
               prompt: promptText,
-              parts_summary: partsSummary
+              parts_summary: partsSummary,
+              grid: s1Data.grid || gridMode,
+              is_4k: is4K
             })
           });
           const s3Data = await s3Resp.json();
@@ -2228,7 +2370,7 @@
 
           const firstCustomId = applyStage3Result(s3Data);
           setStepState(3, 'done', '③ 文本模型<br>✅ 骨骼+动作已生成');
-          log('✅ [步骤3完成] gemini-3.8-flash 已返回 9 部件骨骼装配坐标、' + (s3Data.custom_motions?.length || 0) + ' 个自定义动作曲线 (.motion3.json)、4级物理摆锤 (.physics3.json) 与台词！');
+          log('✅ [步骤3完成] gemini-3.8-flash 已返回 ' + COMPONENT_KEYS.length + ' 部件骨骼装配坐标、' + (s3Data.custom_motions?.length || 0) + ' 个自定义动作曲线 (.motion3.json)、4级物理摆锤 (.physics3.json) 与台词！');
 
           // =========================================================================
           // BACKEND SEQUENTIAL STEP 4: Assemble on Stage & Play Custom Motion
@@ -2342,6 +2484,7 @@
 
     async function loadBundledDemo() {
       log('正在加载预置碧蓝航线水手服舰娘 (banerwei_sailor) 9宫格数据...');
+      COMPONENT_KEYS = COMPONENT_KEYS_3X3.slice();
       activeCharacter = JSON.parse(JSON.stringify(DEFAULT_RIG));
       generatedFilesCache = JSON.parse(JSON.stringify(BUNDLED_JSON_CACHE));
       if (generatedFilesCache.action_spec && generatedFilesCache.action_spec.dialogues) {

@@ -1,15 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Live2D 3x3 Component Grid Prompt Engine (Azur Lane / banerwei_3 Standard).
+Live2D 3x3 (9-Part) & 4x4 (16-Part) Component Grid Prompt Engine (Azur Lane / banerwei_3 Standard).
 Supports:
-  1. Pure Text-to-Image (文生图): Generates 3x3 component sprite sheet strictly matching the user's text description.
-  2. Image-to-Image (图生图): Generates 3x3 component sprite sheet strictly preserving the uploaded reference character image.
-Modeled after Azur Lane (碧蓝航线 banerwei_3) Live2D texture atlas standards:
-  - Strictly ARMLESS torso in Cell (2,0) so detached left/right arms in Cells (2,1) & (2,2) attach without arm duplication.
-  - Pure rear hair in Cell (0,0) without front bangs bleed.
-  - Faceless head + narrow cylindrical neck in Cell (0,1) without wide shoulders.
-  - Hollow-center front bangs + headwear/ears in Cell (0,2) without rear hair.
-  - Generous pure-white margins inside every cell so no collar, hair tip, or shoe is ever clipped.
+  1. Pure Text-to-Image (文生图): Generates 3x3 or 4x4 component sprite sheet strictly matching the user's text description.
+  2. Image-to-Image (图生图): Generates 3x3 or 4x4 component sprite sheet strictly preserving the uploaded reference character image.
+  3. 4K UHD (4096x4096) ultra-high resolution mode.
 """
 
 import re
@@ -103,15 +98,26 @@ def extract_visual_character_desc(raw_prompt: str) -> str:
     return cleaned or raw_prompt.strip()
 
 
+def normalize_grid_spec(grid: Optional[str]) -> str:
+    """Return '4x4' if 4x4 / 16-part is requested, else '3x3'."""
+    if not grid:
+        return "3x3"
+    g = str(grid).strip().lower()
+    if "4" in g or g == "16":
+        return "4x4"
+    return "3x3"
+
+
 def build_live2d_grid_prompt(
     character_description: str,
     preset: Optional[str] = None,
     style_override: Optional[str] = None,
+    grid: str = "3x3",
+    is_4k: bool = False,
 ) -> str:
     """
-    Construct an Azur Lane (banerwei_3) standard 3x3 Live2D component sprite sheet prompt for TEXT-TO-IMAGE (文生图).
-    IMPORTANT: When character_description is provided by the user, strictly use the user's description
-    and NEVER override or prepend any default demo preset!
+    Construct an Azur Lane (banerwei_3) standard 3x3 (9-part) or 4x4 (16-part) Live2D component
+    sprite sheet prompt for TEXT-TO-IMAGE (文生图).
     """
     visual_desc = extract_visual_character_desc(character_description)
     if visual_desc:
@@ -121,7 +127,36 @@ def build_live2d_grid_prompt(
     else:
         desc = "cute anime girl"
 
-    style = style_override or DEFAULT_STYLE
+    grid_mode = normalize_grid_spec(grid)
+    res_tag = "4K UHD 4096x4096 ultra-high resolution razor-sharp vector line art, " if is_4k else ""
+    style = f"{res_tag}{style_override or DEFAULT_STYLE}"
+
+    if grid_mode == "4x4":
+        return (
+            f"A professional 4x4 grid Live2D 16-component dismantling sprite sheet (Live2D立绘16宫格高精拆件图) strictly depicting the following character: {desc}.\n"
+            f"CRITICAL CHARACTER IDENTITY RULE: Every single hair part, facial feature, headwear/ear part, upper bodice, skirt/apron, legs, arms, tail/wings, and prop in this 4x4 sheet MUST strictly match the exact hair color, hairstyle, eye color, accessories, and clothing described in: [{desc}].\n"
+            f"Style: {style}\n"
+            f"CRITICAL 16-CELL ANATOMICAL DECOMPOSITION RULES (Azur Lane High-Flexibility 4x4 Live2D Standard):\n"
+            f"Arrange exactly 16 isolated character components of [{desc}] in an invisible 4-row by 4-column grid on a solid pure white background (#ffffff). "
+            f"Leave at least 14% pure white margin on all 4 sides of every component so no part ever touches another part or the cell border:\n"
+            f"- Cell (Row 1, Col 1) [BACK HAIR ONLY / 后发主体]: ONLY the rear hair mass, long back hair, ponytail, or twin-tails of [{desc}] viewed from the front. Smooth back-hair dome silhouette with NO face skin, NO eyes, and NO front bangs.\n"
+            f"- Cell (Row 1, Col 2) [FACELESS HEAD & NARROW NECK / 无五官脸部底图与窄颈]: ONLY a smooth blank oval anime face skin with two human ears, subtle cheek blush, chin, and a narrow vertical cylindrical neck stub at the bottom. STRICTLY NO eyes, NO eyebrows, NO mouth, NO hair, and NO shoulders.\n"
+            f"- Cell (Row 1, Col 3) [FRONT FOREHEAD BANGS ONLY / 前额刘海与呆毛]: ONLY the center forehead bangs and top crown hair of [{desc}], with an empty U-shaped space below for the face. NO face skin, NO eyes, NO long rear hair.\n"
+            f"- Cell (Row 1, Col 4) [LEFT & RIGHT SIDE HAIR LOCKS / 左右两侧垂发鬓发]: ONLY the symmetrical left and right cheek-framing side hair locks (鬓发/垂发) of [{desc}] with clean white space between them.\n"
+            f"- Cell (Row 2, Col 1) [OPEN EYES PAIR ONLY / 默认睁眼双眸]: A horizontal pair of large sparkling anime open eyes matching the exact eye color of [{desc}] with detailed pupils, highlights, and upper eyelashes ONLY.\n"
+            f"- Cell (Row 2, Col 2) [CLOSED SMILING EYES PAIR / 闭眼微笑弧线]: A horizontal pair of happy curved closed smiling eye arcs for blinking, matching the exact spacing of Cell (Row 2, Col 1).\n"
+            f"- Cell (Row 2, Col 3) [EYEBROWS & BLUSH / 独立双眉与腮红]: A horizontal pair of expressive anime eyebrows matching [{desc}]'s hair color, with two soft pink cheek blush ovals below them.\n"
+            f"- Cell (Row 2, Col 4) [MOUTH / 嘴型组件]: One small cute anime open smiling mouth with pink tongue/fang highlight, centered in the cell.\n"
+            f"- Cell (Row 3, Col 1) [ARMLESS UPPER TORSO BODICE / 无手臂上半身胸衣躯干]: Mannequin-style ARMLESS upper torso from collar/neckline down to the waist wearing the exact top/bodice/collar of [{desc}]. STRICTLY NO arms, NO hands, NO head, and NO lower skirt or legs.\n"
+            f"- Cell (Row 3, Col 2) [DETACHED SKIRT / APRON / LOWER HEM / 独立裙摆或围裙下摆]: Standalone waist-to-thigh skirt, frilled maid apron, or lower coat hem of [{desc}], detached so it can sway independently.\n"
+            f"- Cell (Row 3, Col 3) [DETACHED LEFT ARM / 独立左臂与袖子]: Single isolated left arm wearing the matching left sleeve/cuff/glove of [{desc}] and open hand, with a clean rounded shoulder cap.\n"
+            f"- Cell (Row 3, Col 4) [DETACHED RIGHT ARM / 独立右臂与袖子]: Single isolated right arm wearing the matching right sleeve/cuff/glove of [{desc}] and waving/expressive hand gesture, with a clean rounded shoulder cap.\n"
+            f"- Cell (Row 4, Col 1) [LOWER LEGS, STOCKINGS & SHOES / 独立双腿与丝袜鞋靴]: Front-facing pair of anime legs from upper thighs down to stockings/socks and shoes of [{desc}], isolated without torso or skirt.\n"
+            f"- Cell (Row 4, Col 2) [DETACHED HEADWEAR / ANIMAL EARS / CROWN / 独立头饰或兽耳发箍]: Standalone top head accessory of [{desc}] (such as fluffy cat/fox ears, lace maid headband, ribbons, halo, hat, or crown) with NO hair or face attached.\n"
+            f"- Cell (Row 4, Col 3) [DETACHED REAR TAIL / WINGS / CAPE BOW / 独立尾巴或翅膀后背大蝴蝶结]: Standalone rear accessory of [{desc}] (such as a fluffy tail, angel/demon wings, flowing capelet, or giant waist ribbon bow).\n"
+            f"- Cell (Row 4, Col 4) [DETACHED HAND PROP / FLOATING CHARM / 独立手持道具或胸前铃铛挂件]: Standalone signature accessory or floating prop of [{desc}] (such as a collar ribbon with golden bell, magic wand, teacup tray, or glowing emblem).\n"
+            f"Strict verification: All 16 cells strictly arranged in 4 rows x 4 columns; Cell (Row 3, Col 1) upper torso is completely ARMLESS; solid pure #ffffff white background; zero grid lines, zero text labels, zero numbers."
+        )
 
     prompt = (
         f"A professional 3x3 grid Live2D component dismantling sprite sheet (Live2D立绘九宫格拆件图) strictly depicting the following character: {desc}.\n"
@@ -151,18 +186,24 @@ def build_live2d_grid_prompt(
 def build_image_to_live2d_prompt(
     reference_hint: Optional[str] = None,
     style_override: Optional[str] = None,
+    grid: str = "3x3",
+    is_4k: bool = False,
 ) -> str:
     """
     Construct prompt for IMAGE-TO-IMAGE (图生图): decomposing an uploaded reference character image
-    into an Azur Lane 3x3 Live2D component grid while preserving character identity and applying user hints.
+    into an Azur Lane 3x3 (9-part) or 4x4 (16-part) Live2D component grid while preserving character identity.
     """
+    grid_mode = normalize_grid_spec(grid)
+    part_count = 16 if grid_mode == "4x4" else 9
     visual_hint = extract_visual_character_desc(reference_hint or "")
     extra = f" with additional user specification: ({visual_hint})" if visual_hint else ""
     return build_live2d_grid_prompt(
         character_description=(
-            f"REFERENCE CHARACTER LOCK: the exact character from the provided reference image decomposed into 9 clean Azur Lane Live2D parts, "
+            f"REFERENCE CHARACTER LOCK: the exact character from the provided reference image decomposed into {part_count} clean Azur Lane Live2D parts, "
             f"strictly preserving the reference image's exact hair color, hairstyle, headwear/accessories, eye color, and outfit design{extra}"
         ),
         preset=None,
         style_override=style_override,
+        grid=grid_mode,
+        is_4k=is_4k,
     )

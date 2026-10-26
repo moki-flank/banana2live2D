@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 banano2live2D Command Line Interface.
 """
@@ -31,20 +31,23 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
 
     # Command: create (End-to-End generation)
-    p_create = subparsers.add_parser("create", help="Generate 3x3 sheet and build complete Live2D model")
+    p_create = subparsers.add_parser("create", help="Generate 3x3 or 4x4 sheet and build complete Live2D model")
     p_create.add_argument("-p", "--prompt", type=str, default="", help="Character description prompt")
     p_create.add_argument("--preset", type=str, choices=list(CHARACTER_PRESETS.keys()), default=None, help="Character preset")
     p_create.add_argument("-i", "--image", type=str, default=None, help="Reference character image for Image-to-Live2D")
     p_create.add_argument("-n", "--name", type=str, default="chibi_character", help="Character model name")
     p_create.add_argument("-o", "--output", type=str, default="output/model", help="Output directory")
+    p_create.add_argument("--grid", type=str, default="4x4", choices=["3x3", "4x4"], help="Grid layout: 4x4 (16 parts) or 3x3 (9 parts)")
+    p_create.add_argument("--4k", dest="is_4k", action="store_true", help="Request 4K UHD (4096x4096) component sheet")
     p_create.add_argument("--serve", action="store_true", help="Launch interactive web viewer after build")
     p_create.add_argument("--port", type=int, default=8088, help="Web viewer port")
 
-    # Command: from-grid (Build from existing 3x3 sheet)
-    p_grid = subparsers.add_parser("from-grid", help="Assemble Live2D model from an existing 3x3 component sheet")
-    p_grid.add_argument("grid_image", type=str, help="Path to 3x3 component sprite sheet")
+    # Command: from-grid (Build from existing 3x3 or 4x4 sheet)
+    p_grid = subparsers.add_parser("from-grid", help="Assemble Live2D model from an existing 3x3 or 4x4 component sheet")
+    p_grid.add_argument("grid_image", type=str, help="Path to 3x3 or 4x4 component sprite sheet")
     p_grid.add_argument("-n", "--name", type=str, default="chibi_character", help="Character model name")
     p_grid.add_argument("-o", "--output", type=str, default="output/model", help="Output directory")
+    p_grid.add_argument("--grid", type=str, default="4x4", choices=["3x3", "4x4"], help="Grid layout: 4x4 (16 parts) or 3x3 (9 parts)")
     p_grid.add_argument("--serve", action="store_true", help="Launch interactive web viewer after build")
     p_grid.add_argument("--port", type=int, default=8088, help="Web viewer port")
 
@@ -56,9 +59,10 @@ def main():
     # Command: studio (Interactive Dialog + Attachment Live2D Studio Server)
     p_studio = subparsers.add_parser("studio", help="Launch interactive Dialog + Attachment Live2D Studio Server")
     p_studio.add_argument("--port", type=int, default=8090, help="Studio web server port")
+    p_studio.add_argument("--no-browser", action="store_true", help="Do not open browser automatically")
 
     # Command: presets
-    p_presets = subparsers.add_parser("presets", help="List all available character presets")
+    subparsers.add_parser("presets", help="List all available character presets")
 
     args = parser.parse_args()
 
@@ -85,6 +89,7 @@ def main():
             grid_image_path=args.grid_image,
             character_name=args.name,
             output_dir=args.output,
+            grid=args.grid,
             serve=args.serve,
             port=args.port,
         )
@@ -100,6 +105,8 @@ def main():
             reference_image=args.image,
             character_name=args.name,
             output_dir=args.output,
+            grid=args.grid,
+            is_4k=args.is_4k,
             serve=args.serve,
             port=args.port,
         )

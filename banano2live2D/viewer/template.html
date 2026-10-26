@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>banano2live2D - 碧蓝航线级 (banerwei_3) 交互式 Live2D 播放器</title>
+  <style>
+    :root {
+      --bg-color: #0b0f19;
+      --panel-bg: rgba(17, 24, 39, 0.92);
+      --panel-border: rgba(255, 255, 255, 0.12);
+      --accent-color: #38bdf8;
+      --accent-hover: #0ea5e9;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --btn-bg: rgba(255, 255, 255, 0.08);
+      --btn-hover: rgba(56, 189, 248, 0.25);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+    header {
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--panel-border);
+      background: var(--panel-bg);
+      backdrop-filter: blur(14px);
+      z-index: 20;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 1.25rem;
+      letter-spacing: -0.5px;
+    }
+    .logo-badge {
+      background: linear-gradient(135deg, #0284c7, #38bdf8);
+      color: #fff;
+      font-size: 0.75rem;
+      padding: 2px 10px;
+      border-radius: 9999px;
+      font-weight: 600;
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
+    }
+    .container {
+      display: flex;
+      flex: 1;
+      position: relative;
+    }
+    .canvas-container {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      background: radial-gradient(circle at center, #1e293b 0%, #090d16 100%);
+      overflow: hidden;
+      cursor: pointer;
+    }
+    #stageCanvas {
+      box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.7);
+      border-radius: 16px;
+      background: transparent;
+      max-width: 90vw;
+      max-height: 82vh;
+    }
+    .status-hud {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid var(--panel-border);
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      pointer-events: none;
+      backdrop-filter: blur(8px);
+    }
+    .status-hud span { color: var(--accent-color); font-weight: 600; }
+    .dialogue-box {
+      position: absolute;
+      bottom: 22px;
+      left: 50%;
+      transform: translateX(-50%);
+      min-width: 380px;
+      max-width: 680px;
+      background: rgba(15, 23, 42, 0.90);
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      border-radius: 12px;
+      padding: 12px 20px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(10px);
+      pointer-events: none;
+      transition: opacity 0.25s;
+    }
+    .dialogue-tag {
+      font-size: 0.72rem;
+      color: var(--accent-color);
+      font-weight: 700;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+      letter-spacing: 0.05em;
+    }
+    .dialogue-text {
+      font-size: 0.92rem;
+      color: #f8fafc;
+      line-height: 1.45;
+    }
+    .controls-panel {
+      width: 400px;
+      background: var(--panel-bg);
+      border-left: 1px solid var(--panel-border);
+      backdrop-filter: blur(16px);
+      display: flex;
+      flex-direction: column;
+      z-index: 10;
+      overflow-y: auto;
+      max-height: calc(100vh - 60px);
+    }
+    .section {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--panel-border);
+    }
+    .section-title {
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .btn-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 7px;
+    }
+    button {
+      background: var(--btn-bg);
+      color: var(--text-main);
+      border: 1px solid var(--panel-border);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    button:hover {
+      background: var(--btn-hover);
+      border-color: var(--accent-color);
+      transform: translateY(-1px);
+    }
+    button.primary {
+      background: linear-gradient(135deg, #0284c7, #0ea5e9);
+      border: none;
+      font-weight: 600;
+      color: #fff;
+    }
+    .slider-group { margin-bottom: 10px; }
+    .slider-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.78rem;
+      margin-bottom: 3px;
+      color: var(--text-muted);
+    }
+    input[type="range"] {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.15);
+      outline: none;
+      -webkit-appearance: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: var(--accent-color);
+      cursor: pointer;
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.8);
+    }
+    .layer-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 5px 4px;
+      font-size: 0.82rem;
+      border-radius: 4px;
+    }
+    .layer-item label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .layer-badge {
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-muted);
+    }
+    .footer-bar {
+      padding: 14px 18px;
+      display: flex;
+      gap: 10px;
+    }
+    .footer-bar button { flex: 1; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <span>🍌 banano2live2D</span>
+      <span class="logo-badge">Azur Lane Cubism 3 (banerwei_3)</span>
+    </div>
+    <div style="font-size: 0.85rem; color: var(--text-muted);">
+      角色模型: <strong id="charNameDisplay" style="color: var(--text-main);">加载中...</strong>
+      &nbsp;|&nbsp; 点击立绘头部/胸部/身体可触发秘书舰互动
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="canvas-container" id="canvasContainer">
+      <canvas id="stageCanvas" width="850" height="850"></canvas>
+      <div class="status-hud">
+        FPS: <span id="fpsDisplay">60</span> &nbsp;|&nbsp;
+        AngleX: <span id="angleXDisplay">0.0</span> &nbsp;|&nbsp;
+        AngleY: <span id="angleYDisplay">0.0</span> &nbsp;|&nbsp;
+        动作: <span id="activeMotionDisplay">Idle</span>
+      </div>
+      <div class="dialogue-box" id="dialogueBox">
+        <div class="dialogue-tag" id="dialogueTag">SECRETARY // IDLE</div>
+        <div class="dialogue-text" id="dialogueText">指挥官，欢迎来到港区！点击左侧立绘头部或身体可以和我互动哦~</div>
+      </div>
+    </div>
+
+    <div class="controls-panel">
+      <!-- 碧蓝航线秘书舰动作预设 -->
+      <div class="section">
+        <div class="section-title">碧蓝航线标准动作 (Azur Lane Motions)</div>
+        <div class="btn-grid">
+          <button onclick="playMotion('Idle', 'idle')">🍃 待机 (Idle)</button>
+          <button onclick="playMotion('Login', 'login')">⚓ 登录 (Login)</button>
+          <button onclick="playMotion('Home', 'home')">🏠 回港 (Home)</button>
+          <button onclick="playMotion('TouchHead', 'touch_head')">💕 摸头 (Head)</button>
+          <button onclick="playMotion('TouchBody', 'touch_body')">✨ 触碰 (Body)</button>
+          <button onclick="playMotion('TouchSpecial', 'touch_special')">😳 特殊 (Spec)</button>
+          <button onclick="playMotion('Main1', 'main_1')">💬 台词 1</button>
+          <button onclick="playMotion('Main2', 'main_2')">✌ 台词 2</button>
+          <button onclick="playMotion('Main3', 'main_3')">📖 台词 3</button>
+          <button onclick="playMotion('Wedding', 'wedding')">💍 誓约 (Oath)</button>
+          <button onclick="playMotion('Wave', 'complete')">👋 挥手 (Wave)</button>
+          <button onclick="playMotion('Wink', 'mail')">😉 眨眼 (Wink)</button>
+        </div>
+        <div id="customMotionsContainer" style="margin-top: 10px; display: none;">
+          <div class="section-title" style="color: #34d399; margin-bottom: 6px;">✨ gemini-3.8-flash 专属动作</div>
+          <div class="btn-grid" id="customMotionsGrid"></div>
+        </div>
+      </div>
+
+      <!-- 实时 Live2D 参数控制 -->
+      <div class="section">
+        <div class="section-title">
+          <span>实时参数 (Cubism 3 Params)</span>
+          <button style="padding: 2px 8px; font-size: 0.7rem;" onclick="resetParams()">复位 (Reset)</button>
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label"><span>头部左右偏转 (ParamAngleX)</span><span id="valAngleX">0</span></div>
+          <input type="range" id="paramAngleX" min="-30" max="30" value="0" step="0.5" oninput="updateParam(this, 'valAngleX')">
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label"><span>头部俯仰抬头 (ParamAngleY)</span><span id="valAngleY">0</span></div>
+          <input type="range" id="paramAngleY" min="-30" max="30" value="0" step="0.5" oninput="updateParam(this, 'valAngleY')">
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label"><span>头部歪头倾斜 (ParamAngleZ)</span><span id="valAngleZ">0</span></div>
+          <input type="range" id="paramAngleZ" min="-30" max="30" value="0" step="0.5" oninput="updateParam(this, 'valAngleZ')">
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label"><span>左臂摆角 (ParamArmLAngle)</span><span id="valArmL">0</span></div>
+          <input type="range" id="paramArmL" min="-30" max="30" value="0" step="0.5" oninput="updateParam(this, 'valArmL')">
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label"><span>右臂耶手摆角 (ParamArmRAngle)</span><span id="valArmR">0</span></div>
+          <input type="range" id="paramArmR" min="-30" max="30" value="0" step="0.5" oninput="updateParam(this, 'valArmR')">
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label"><span>嘴型张合 (ParamMouthOpenY)</span><span id="valMouthOpen">0.0</span></div>
+          <input type="range" id="paramMouthOpen" min="0" max="1" value="0" step="0.05" oninput="updateParam(this, 'valMouthOpen')">
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label"><span>身体呼吸 (ParamBreath)</span><span id="valBreath">0.0</span></div>
+          <input type="range" id="paramBreath" min="0" max="1" value="0" step="0.05" oninput="updateParam(this, 'valBreath')">
+        </div>
+
+        <div style="display: flex; gap: 12px; margin-top: 8px; flex-wrap: wrap;">
+          <label style="font-size: 0.78rem; display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="autoTracking" checked> 鼠标视线追踪
+          </label>
+          <label style="font-size: 0.78rem; display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="autoBlink" checked> 自动眨眼
+          </label>
+          <label style="font-size: 0.78rem; display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <input type="checkbox" id="autoBreath" checked> 物理呼吸与发丝摆动
+          </label>
+        </div>
+      </div>
+
+      <!-- 组件图层检查器 -->
+      <div class="section" style="flex: 1;">
+        <div class="section-title">
+          <span>9宫格解剖部件图层 (Parts)</span>
+          <label style="font-size: 0.74rem; text-transform: none; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+            <input type="checkbox" id="showBboxes" onchange="renderStage()"> 显示骨骼锚点与碰撞框
+          </label>
+        </div>
+        <div id="layersList"></div>
+      </div>
+
+      <!-- 操作导出 -->
+      <div class="footer-bar">
+        <button class="primary" onclick="exportZip()">📦 导出完整 Cubism 3 (.model3/.cdi3/.physics3/.motion3) ZIP</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let characterData = null;
+    let partsImages = {};
+    let motionsCache = {};
+    let activeMotion = null;
+    let layerVisibility = {};
+    let floatingEffects = [];
+
+    let params = {
+      ParamAngleX: 0,
+      ParamAngleY: 0,
+      ParamAngleZ: 0,
+      ParamEyeLOpen: 1.0,
+      ParamEyeROpen: 1.0,
+      ParamEyeLSmile: 0.0,
+      ParamEyeRSmile: 0.0,
+      ParamEyeBallX: 0,
+      ParamEyeBallY: 0,
+      ParamMouthOpenY: 0,
+      ParamMouthForm: 0,
+      ParamBreath: 0,
+      ParamBodyAngleX: 0,
+      ParamBodyAngleY: 0,
+      ParamBodyAngleZ: 0,
+      ParamArmLAngle: 0,
+      ParamArmRAngle: 0,
+      ParamHairFront: 0,
+      ParamHairSide: 0,
+      ParamHairBack: 0,
+      ParamSkirtSway: 0,
+      ParamCheek: 0,
+    };
+
+    const canvas = document.getElementById('stageCanvas');
+    const ctx = canvas.getContext('2d');
+    const container = document.getElementById('canvasContainer');
+
+    let nextBlinkTime = performance.now() + 2500;
+    let blinkDuration = 190;
+    let isBlinking = false;
+    let blinkStart = 0;
+
+    async function init() {
+      try {
+        if (window.__EMBEDDED_CHARACTER_DATA__) {
+          characterData = window.__EMBEDDED_CHARACTER_DATA__;
+        } else {
+          const resp = await fetch('character_data.json');
+          characterData = await resp.json();
+        }
+        document.getElementById('charNameDisplay').innerText = characterData.character_name || 'banerwei_sailor';
+
+        buildLayerControls();
+        await loadTextures();
+        await preloadMotions();
+        buildCustomMotionButtons();
+        setupInteractions();
+
+        requestAnimationFrame(renderLoop);
+      } catch (err) {
+        console.error('加载 character_data.json 失败:', err);
+        document.getElementById('charNameDisplay').innerText = '加载失败 (请使用 HTTP 服务运行)';
+      }
+    }
+
+    function buildCustomMotionButtons() {
+      const cms = characterData?.custom_motions || characterData?.action_spec?.custom_motions || [];
+      if (!Array.isArray(cms) || cms.length === 0) return;
+      const box = document.getElementById('customMotionsContainer');
+      const grid = document.getElementById('customMotionsGrid');
+      if (!box || !grid) return;
+      box.style.display = 'block';
+      grid.innerHTML = '';
+      cms.forEach(cm => {
+        const mId = cm.id;
+        if (!mId) return;
+        const rawLabel = cm.label || cm.name || mId;
+        const label = String(rawLabel).replace(/^✨\s*/, '');
+        const dlg = cm.dialogue || cm.description || '';
+        if (dlg && characterData.action_spec) {
+          characterData.action_spec.dialogues = characterData.action_spec.dialogues || {};
+          characterData.action_spec.dialogues[mId.toLowerCase()] = dlg;
+        }
+        const btn = document.createElement('button');
+        btn.style.borderColor = 'rgba(52, 211, 153, 0.5)';
+        btn.style.color = '#a7f3d0';
+        btn.onclick = () => playMotion(mId, mId.toLowerCase());
+        btn.innerText = '✨ ' + label;
+        grid.appendChild(btn);
+      });
+    }
+
+    function buildLayerControls() {
+      const list = document.getElementById('layersList');
+      list.innerHTML = '';
+      const parts = characterData.parts;
+      const sorted = Object.keys(parts).sort((a, b) => parts[b].z_index - parts[a].z_index);
+
+      sorted.forEach(key => {
+        // 碧蓝航线无臂躯干架构：arm_left 和 arm_right 必须默认常驻开启！仅 eyes_closed 由眨眼状态控制
+        layerVisibility[key] = (key !== 'eyes_closed');
+
+        const div = document.createElement('div');
+        div.className = 'layer-item';
+        div.innerHTML = `
+          <label>
+            <input type="checkbox" id="chk_${key}" ${layerVisibility[key] ? 'checked' : ''} onchange="toggleLayer('${key}', this.checked)">
+            <span>${key}</span>
+          </label>
+          <span class="layer-badge">z: ${parts[key].z_index}</span>
+        `;
+        list.appendChild(div);
+      });
+    }
+
+    function toggleLayer(key, visible) {
+      layerVisibility[key] = visible;
+      renderStage();
+    }
+
+    async function loadTextures() {
+      const parts = characterData.parts;
+      const b64Map = window.__EMBEDDED_PARTS_B64__ || {};
+      const promises = Object.keys(parts).map(key => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          const srcUrl = b64Map[key] || parts[key].texture_file;
+          if (srcUrl.startsWith('http')) img.crossOrigin = 'anonymous';
+          img.onload = () => { partsImages[key] = img; resolve(); };
+          img.onerror = () => resolve();
+          img.src = srcUrl;
+        });
+      });
+      await Promise.all(promises);
+    }
+
+    async function preloadMotions() {
+      if (window.__EMBEDDED_MOTIONS__) {
+        motionsCache = Object.assign({}, window.__EMBEDDED_MOTIONS__);
+        return;
+      }
+      const motions = characterData.motions || {};
+      for (const [name, mPath] of Object.entries(motions)) {
+        try {
+          const resp = await fetch(mPath);
+          motionsCache[name] = await resp.json();
+        } catch (e) {}
+      }
+    }
+
+    function setupInteractions() {
+      container.addEventListener('mousemove', (e) => {
+        if (!document.getElementById('autoTracking').checked || activeMotion) return;
+        const rect = container.getBoundingClientRect();
+        const nx = (e.clientX - rect.left) / rect.width * 2 - 1;
+        const ny = (e.clientY - rect.top) / rect.height * 2 - 1;
+
+        params.ParamAngleX = nx * 20;
+        params.ParamAngleY = -ny * 15;
+        params.ParamAngleZ = nx * -4;
+        params.ParamEyeBallX = nx * 0.75;
+        params.ParamEyeBallY = -ny * 0.75;
+        params.ParamBodyAngleX = nx * 6;
+        params.ParamHairFront = nx * 0.35;
+        params.ParamHairSide = nx * 0.4;
+        params.ParamHairBack = -nx * 0.3;
+
+        syncSliders();
+      });
+
+      container.addEventListener('mouseleave', () => {
+        if (!document.getElementById('autoTracking').checked || activeMotion) return;
+        resetParams();
+      });
+
+      // 点击立绘不同部位触发碧蓝航线 HitArea 互动
+      canvas.addEventListener('click', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const cy = (e.clientY - rect.top) / rect.height * 1000;
+        const cx = (e.clientX - rect.left) / rect.width * canvas.width;
+        const canvasY = (e.clientY - rect.top) / rect.height * canvas.height;
+
+        if (cy < 355) {
+          spawnFloatingEffect(cx, canvasY, '♥', '#fb7185');
+          playMotion('TouchHead', 'touch_head');
+        } else if (cy < 485) {
+          spawnFloatingEffect(cx, canvasY, '?!', '#f43f5e');
+          playMotion('TouchSpecial', 'touch_special');
+        } else {
+          spawnFloatingEffect(cx, canvasY, '♪', '#38bdf8');
+          playMotion('TouchBody', 'touch_body');
+        }
+      });
+    }
+
+    function spawnFloatingEffect(x, y, symbol, color) {
+      floatingEffects.push({ x, y, symbol, color, start: performance.now() });
+    }
+
+    function syncSliders() {
+      document.getElementById('paramAngleX').value = params.ParamAngleX;
+      document.getElementById('valAngleX').innerText = params.ParamAngleX.toFixed(1);
+      document.getElementById('paramAngleY').value = params.ParamAngleY;
+      document.getElementById('valAngleY').innerText = params.ParamAngleY.toFixed(1);
+      document.getElementById('paramAngleZ').value = params.ParamAngleZ;
+      document.getElementById('valAngleZ').innerText = params.ParamAngleZ.toFixed(1);
+      document.getElementById('paramArmL').value = params.ParamArmLAngle;
+      document.getElementById('valArmL').innerText = params.ParamArmLAngle.toFixed(1);
+      document.getElementById('paramArmR').value = params.ParamArmRAngle;
+      document.getElementById('valArmR').innerText = params.ParamArmRAngle.toFixed(1);
+      document.getElementById('paramMouthOpen').value = params.ParamMouthOpenY;
+      document.getElementById('valMouthOpen').innerText = params.ParamMouthOpenY.toFixed(2);
+      document.getElementById('paramBreath').value = params.ParamBreath;
+      document.getElementById('valBreath').innerText = params.ParamBreath.toFixed(2);
+
+      document.getElementById('angleXDisplay').innerText = params.ParamAngleX.toFixed(1);
+      document.getElementById('angleYDisplay').innerText = params.ParamAngleY.toFixed(1);
+    }
+
+    function updateParam(slider, labelId) {
+      const val = parseFloat(slider.value);
+      document.getElementById(labelId).innerText = val.toFixed(1);
+      if (slider.id === 'paramAngleX') params.ParamAngleX = val;
+      if (slider.id === 'paramAngleY') params.ParamAngleY = val;
+      if (slider.id === 'paramAngleZ') params.ParamAngleZ = val;
+      if (slider.id === 'paramArmL') params.ParamArmLAngle = val;
+      if (slider.id === 'paramArmR') params.ParamArmRAngle = val;
+      if (slider.id === 'paramMouthOpen') params.ParamMouthOpenY = val;
+      if (slider.id === 'paramBreath') params.ParamBreath = val;
+    }
+
+    function resetParams() {
+      Object.keys(params).forEach(k => {
+        params[k] = (k === 'ParamEyeLOpen' || k === 'ParamEyeROpen') ? 1.0 : 0.0;
+      });
+      syncSliders();
+    }
+
+    function playMotion(name, dialogueKey) {
+      if (!motionsCache[name]) return;
+      resetParams();
+      activeMotion = { name, data: motionsCache[name], start: performance.now() };
+      document.getElementById('activeMotionDisplay').innerText = name;
+
+      const dialogues = characterData?.action_spec?.dialogues || {};
+      const key = dialogueKey || name.toLowerCase();
+      if (dialogues[key]) {
+        document.getElementById('dialogueTag').innerText = `SECRETARY // ${name.toUpperCase()}`;
+        document.getElementById('dialogueText').innerText = dialogues[key];
+      }
+    }
+
+    // 支持 Cubism 3 线性分段 (type 0) 与三次贝塞尔曲线分段 (type 1)
+    function evaluateSegments(segments, t) {
+      if (!segments || segments.length < 2) return 0;
+      let t0 = segments[0];
+      let v0 = segments[1];
+      let idx = 2;
+
+      while (idx < segments.length) {
+        const segType = segments[idx];
+        if (segType === 1) {
+          // Cubic Bezier: [1, c1t, c1v, c2t, c2v, t1, v1]
+          const c1v = segments[idx + 2];
+          const c2v = segments[idx + 4];
+          const t1 = segments[idx + 5];
+          const v1 = segments[idx + 6];
+          if (t <= t1) {
+            const u = Math.max(0, Math.min(1, (t - t0) / Math.max(0.0001, t1 - t0)));
+            const inv = 1 - u;
+            return inv * inv * inv * v0 + 3 * inv * inv * u * c1v + 3 * inv * u * u * c2v + u * u * u * v1;
+          }
+          t0 = t1;
+          v0 = v1;
+          idx += 7;
+        } else {
+          // Linear: [0, t1, v1]
+          const t1 = segments[idx + 1];
+          const v1 = segments[idx + 2];
+          if (t <= t1) {
+            const u = Math.max(0, Math.min(1, (t - t0) / Math.max(0.0001, t1 - t0)));
+            return v0 + (v1 - v0) * u;
+          }
+          t0 = t1;
+          v0 = v1;
+          idx += 3;
+        }
+      }
+      return v0;
+    }
+
+    let frameCount = 0;
+    let fpsTime = performance.now();
+
+    function renderLoop(now) {
+      frameCount++;
+      if (now - fpsTime >= 1000) {
+        document.getElementById('fpsDisplay').innerText = frameCount;
+        frameCount = 0;
+        fpsTime = now;
+      }
+
+      if (document.getElementById('autoBreath').checked && !activeMotion) {
+        params.ParamBreath = (Math.sin(now * 0.0022) + 1) * 0.5;
+        params.ParamHairFront = Math.sin(now * 0.0018) * 0.12;
+        params.ParamHairSide = Math.sin(now * 0.0018 - 0.4) * 0.15;
+        params.ParamHairBack = Math.sin(now * 0.0016 - 0.8) * 0.14;
+      }
+
+      if (document.getElementById('autoBlink').checked && !activeMotion) {
+        if (!isBlinking && now >= nextBlinkTime) {
+          isBlinking = true;
+          blinkStart = now;
+        }
+        if (isBlinking) {
+          const progress = (now - blinkStart) / blinkDuration;
+          if (progress >= 1.0) {
+            isBlinking = false;
+            params.ParamEyeLOpen = 1.0;
+            params.ParamEyeROpen = 1.0;
+            nextBlinkTime = now + 2600 + Math.random() * 2800;
+          } else {
+            const eyeVal = progress < 0.5 ? 1.0 - progress * 2 : (progress - 0.5) * 2;
+            params.ParamEyeLOpen = eyeVal;
+            params.ParamEyeROpen = eyeVal;
+          }
+        }
+      }
+
+      if (activeMotion) {
+        const elapsed = (now - activeMotion.start) / 1000;
+        const duration = activeMotion.data.Meta.Duration;
+        const isLoop = activeMotion.data.Meta.Loop;
+
+        if (elapsed > duration) {
+          if (isLoop) {
+            activeMotion.start = now;
+          } else {
+            activeMotion = null;
+            resetParams();
+            document.getElementById('activeMotionDisplay').innerText = 'Idle';
+          }
+        } else {
+          activeMotion.data.Curves.forEach(curve => {
+            const pId = curve.Id;
+            const val = evaluateSegments(curve.Segments, elapsed);
+            if (params.hasOwnProperty(pId)) {
+              params[pId] = val;
+            }
+          });
+          syncSliders();
+        }
+      }
+
+      renderStage(now);
+      requestAnimationFrame(renderLoop);
+    }
+
+    function renderStage(now = performance.now()) {
+      if (!characterData) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const parts = characterData.parts;
+      const sortedKeys = Object.keys(parts).sort((a, b) => parts[a].z_index - parts[b].z_index);
+      const scaleRatio = canvas.width / characterData.canvas.width;
+      const showBboxes = document.getElementById('showBboxes')?.checked || false;
+
+      const isEyesClosed = (params.ParamEyeLOpen < 0.45) || (params.ParamEyeLSmile > 0.6);
+
+      // 身体整体呼吸与倾斜传递量
+      const bodyOffsetX = params.ParamBodyAngleX * 0.35;
+      const bodyOffsetY = -params.ParamBreath * 2.5 - params.ParamBodyAngleY * 0.35;
+      const bodyRot = params.ParamBodyAngleZ * 0.4 * Math.PI / 180;
+
+      sortedKeys.forEach(key => {
+        if (key === 'eyes_open' && isEyesClosed) return;
+        if (key === 'eyes_closed' && !isEyesClosed) return;
+        if (!layerVisibility[key] && !(key === 'eyes_closed' && isEyesClosed)) return;
+
+        const p = parts[key];
+        const img = partsImages[key];
+        if (!img) return;
+
+        ctx.save();
+
+        let offsetX = bodyOffsetX;
+        let offsetY = bodyOffsetY;
+        let rotation = bodyRot;
+        let scaleX = 1.0;
+        let scaleY = 1.0;
+
+        const drawW = p.width * scaleRatio;
+        const drawH = p.height * scaleRatio;
+        const posX = p.paste_pos[0] * scaleRatio;
+        const posY = p.paste_pos[1] * scaleRatio;
+        const anchorX = posX + drawW * p.pivot[0];
+        const anchorY = posY + drawH * p.pivot[1];
+
+        if (key === 'front_hair') {
+          offsetX += params.ParamAngleX * 0.58 + params.ParamHairFront * 12;
+          offsetY += params.ParamAngleY * 0.42;
+          rotation += (params.ParamAngleZ + params.ParamAngleX * 0.14 + params.ParamHairSide * 4) * Math.PI / 180;
+        } else if (key === 'back_hair') {
+          offsetX += -params.ParamAngleX * 0.30 + params.ParamHairBack * 14;
+          offsetY += -params.ParamAngleY * 0.22;
+          rotation += (params.ParamAngleZ * 0.85 - params.ParamAngleX * 0.10) * Math.PI / 180;
+        } else if (key === 'head_base') {
+          offsetX += params.ParamAngleX * 0.40;
+          offsetY += params.ParamAngleY * 0.30;
+          rotation += params.ParamAngleZ * Math.PI / 180;
+        } else if (key.startsWith('eyes')) {
+          offsetX += params.ParamAngleX * 0.46 + params.ParamEyeBallX * 6;
+          offsetY += params.ParamAngleY * 0.34 - params.ParamEyeBallY * 4.5;
+          rotation += params.ParamAngleZ * Math.PI / 180;
+        } else if (key === 'mouth') {
+          offsetX += params.ParamAngleX * 0.43;
+          offsetY += params.ParamAngleY * 0.32;
+          rotation += params.ParamAngleZ * Math.PI / 180;
+          scaleY = 0.72 + params.ParamMouthOpenY * 0.65;
+          scaleX = 0.92 + params.ParamMouthForm * 0.16;
+        } else if (key === 'body_torso') {
+          scaleY = 1.0 + params.ParamBreath * 0.014;
+        } else if (key === 'arm_left') {
+          rotation += params.ParamArmLAngle * Math.PI / 180;
+        } else if (key === 'arm_right') {
+          rotation += params.ParamArmRAngle * Math.PI / 180;
+        }
+
+        ctx.translate(anchorX + offsetX, anchorY + offsetY);
+        ctx.rotate(rotation);
+        ctx.scale(scaleX, scaleY);
+
+        ctx.drawImage(img, -drawW * p.pivot[0], -drawH * p.pivot[1], drawW, drawH);
+
+        // 害羞红晕渲染 (ParamCheek)
+        if (key === 'head_base' && params.ParamCheek > 0.08) {
+          ctx.fillStyle = `rgba(255, 105, 145, ${Math.min(0.45, params.ParamCheek * 0.38)})`;
+          ctx.beginPath();
+          ctx.ellipse(-drawW * 0.22, drawH * 0.05, drawW * 0.11, drawH * 0.045, 0, 0, Math.PI * 2);
+          ctx.ellipse(drawW * 0.22, drawH * 0.05, drawW * 0.11, drawH * 0.045, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        if (showBboxes) {
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(-drawW * p.pivot[0], -drawH * p.pivot[1], drawW, drawH);
+          ctx.fillStyle = '#ef4444';
+          ctx.beginPath();
+          ctx.arc(0, 0, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.restore();
+      });
+
+      // 渲染点击互动浮动气泡 (♥ / ?! / ♪)
+      floatingEffects = floatingEffects.filter(ef => now - ef.start < 1100);
+      floatingEffects.forEach(ef => {
+        const p = (now - ef.start) / 1100;
+        ctx.save();
+        ctx.globalAlpha = 1 - p;
+        ctx.font = 'bold 28px sans-serif';
+        ctx.fillStyle = ef.color;
+        ctx.fillText(ef.symbol, ef.x, ef.y - p * 45);
+        ctx.restore();
+      });
+    }
+
+    async function exportZip() {
+      if (!characterData) return;
+      const zip = new JSZip();
+      const charName = characterData.character_name || 'banerwei_sailor';
+
+      try {
+        for (const fKey of ['model3_json', 'cdi3_json', 'physics3_json', 'action_spec_json']) {
+          if (characterData[fKey]) {
+            try {
+              const r = await fetch(characterData[fKey]);
+              zip.file(characterData[fKey], await r.text());
+            } catch (e) {}
+          }
+        }
+        zip.file('character_data.json', JSON.stringify(characterData, null, 2));
+
+        const texResp = await fetch(characterData.texture_atlas);
+        zip.file(characterData.texture_atlas, await texResp.blob());
+
+        const prevResp = await fetch(characterData.composite_preview);
+        zip.file(characterData.composite_preview, await prevResp.blob());
+
+        for (const [key, p] of Object.entries(characterData.parts)) {
+          try {
+            const pResp = await fetch(p.texture_file);
+            zip.file(p.texture_file, await pResp.blob());
+          } catch (e) {}
+        }
+
+        const motions = characterData.motions || {};
+        for (const [name, mPath] of Object.entries(motions)) {
+          try {
+            const mResp = await fetch(mPath);
+            zip.file(mPath, await mResp.text());
+          } catch (e) {}
+        }
+
+        const content = await zip.generateAsync({ type: 'blob' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(content);
+        a.download = `${charName}_live2d_cubism3.zip`;
+        a.click();
+      } catch (err) {
+        alert('导出失败: ' + err.message);
+      }
+    }
+
+    window.onload = init;
+  </script>
+</body>
+</html>

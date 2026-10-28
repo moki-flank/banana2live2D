@@ -247,6 +247,14 @@ def build_live2d_model_package(
         anchor_x = int(paste_x + scaled_w * pivot[0])
         anchor_y = int(paste_y + scaled_h * pivot[1])
 
+        from .skeletal_mesh_builder import build_part_triangle_mesh, build_hierarchical_skeleton
+        part_mesh = build_part_triangle_mesh(
+            part_name=name,
+            img=p_img,
+            part_cfg=comp_info,
+            uv_rect=uv_map.get(name, {"uv": {"u0": 0, "v0": 0, "u1": 1, "v1": 1}}),
+            atlas_size=atlas_img.width,
+        )
         runtime_parts[name] = {
             "name": name,
             "z_index": z_idx,
@@ -261,6 +269,7 @@ def build_live2d_model_package(
             "live2d_params": comp_info.get("live2d_params", []),
             "texture_file": f"parts/{name}.png",
             "atlas_rect": uv_map.get(name, {}),
+            "mesh": part_mesh,
         }
 
         if name not in preview_skip:
@@ -276,10 +285,23 @@ def build_live2d_model_package(
     with open(action_spec_path, "w", encoding="utf-8") as f:
         json.dump(action_spec, f, indent=2, ensure_ascii=False)
 
-    # 7. Save comprehensive character metadata for web player
+    # 7. Save comprehensive character metadata for web player (with 26-bone FK skeleton & triangle ArtMeshes)
+    from .skeletal_mesh_builder import build_hierarchical_skeleton
+    grid_mode = "4x4" if len(runtime_parts) > 9 else "3x3"
+    skeleton_data = build_hierarchical_skeleton(rig_config, parts_data=parts_data, grid_mode=grid_mode)
+    total_verts = sum(rp.get("mesh", {}).get("vertex_count", 0) for rp in runtime_parts.values())
+    total_tris = sum(rp.get("mesh", {}).get("triangle_count", 0) for rp in runtime_parts.values())
+
     meta = {
         "character_name": character_name,
-        "architecture": "Azur Lane Cubism 3 (banerwei_3 Reference)",
+        "architecture": "Azur Lane Cubism 3 + 26-Bone Hierarchical Skeleton & Adaptive Triangle ArtMesh",
+        "skeleton": skeleton_data,
+        "mesh_summary": {
+            "total_vertices": total_verts,
+            "total_triangles": total_tris,
+            "bone_count": skeleton_data["bone_count"],
+            "physics_chain_count": len(skeleton_data["physics_chains"]),
+        },
         "canvas": {"width": canvas_w, "height": canvas_h},
         "model3_json": f"{character_name}.model3.json",
         "cdi3_json": f"{character_name}.cdi3.json",

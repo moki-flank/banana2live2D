@@ -79,8 +79,9 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
 
     def end_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         super().end_headers()
 
@@ -88,11 +89,112 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
+    def _is_hrio_api_path(self) -> bool:
+        p = self.path.split("?", 1)[0]
+        return p.startswith("/api/v1/") or p.startswith("/v1/")
+
+    def _handle_hrio_api_proxy(self, method: str):
+        import urllib.parse
+        import urllib.request
+        import urllib.error
+        parsed = urllib.parse.urlparse(self.path)
+        qs = urllib.parse.parse_qs(parsed.query)
+        clean_path = parsed.path
+        if clean_path.startswith("/api/v1/"):
+            subpath = clean_path[len("/api/v1/"):]
+        elif clean_path.startswith("/v1/"):
+            subpath = clean_path[len("/v1/"):]
+        else:
+            subpath = clean_path.lstrip("/")
+
+        target_base = (
+            self.headers.get("X-Target-Base-Url")
+            or (qs.get("target_base") or [""])[0]
+            or os.environ.get("HRIO_BASE_URL")
+            or DEFAULT_BASE_URL
+        ).strip().rstrip("/")
+
+        forward_qs = {k: v for k, v in qs.items() if k not in ("target_base", "api_key")}
+        query_str = urllib.parse.urlencode(forward_qs, doseq=True)
+        target_url = f"{target_base}/{subpath}"
+        if query_str:
+            target_url = f"{target_url}?{query_str}"
+
+        auth_header = (self.headers.get("Authorization") or "").strip()
+        if not auth_header or auth_header.lower() == "bearer":
+            q_key = (qs.get("api_key") or [""])[0].strip()
+            env_key = os.environ.get("HRIO_API_KEY", "").strip() or DEFAULT_API_KEY
+            use_key = q_key or env_key
+            if use_key:
+                auth_header = use_key if use_key.lower().startswith("bearer ") else f"Bearer {use_key}"
+
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        body_bytes = self.rfile.read(length) if length > 0 else None
+
+        req_headers = {
+            "User-Agent": "banano2live2D-proxy/1.1",
+            "Accept": "application/json, */*",
+        }
+        if self.headers.get("Content-Type"):
+            req_headers["Content-Type"] = self.headers.get("Content-Type")
+        elif body_bytes is not None:
+            req_headers["Content-Type"] = "application/json"
+        if auth_header:
+            req_headers["Authorization"] = auth_header
+
+        req = urllib.request.Request(target_url, data=body_bytes, headers=req_headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                resp_bytes = resp.read()
+                status_code = resp.status
+                ctype = resp.headers.get("Content-Type", "application/json; charset=utf-8")
+        except urllib.error.HTTPError as e:
+            resp_bytes = e.read()
+            status_code = e.code
+            ctype = e.headers.get("Content-Type", "application/json; charset=utf-8") if e.headers else "application/json; charset=utf-8"
+        except Exception as e:
+            self._send_json(502, {"error": {"message": f"本地代理请求上游失败: {e}"}})
+            return
+
+        if status_code == 200 and "images/generations" in subpath:
+            try:
+                resp_obj = json.loads(resp_bytes.decode("utf-8"))
+                items = resp_obj.get("data") if isinstance(resp_obj, dict) else None
+                if isinstance(items, list):
+                    for item in items:
+                        if isinstance(item, dict) and item.get("url") and not item.get("b64_json"):
+                            try:
+                                r_img = urllib.request.Request(item["url"], headers={"User-Agent": "Mozilla/5.0", "Referer": "https://hrioapi.hrio.site/"})
+                                with urllib.request.urlopen(r_img, timeout=120) as ir:
+                                    raw = ir.read()
+                                    ic = (ir.headers.get("Content-Type") or "image/png").split(";")[0].strip()
+                                b64_s = base64.b64encode(raw).decode("ascii")
+                                item["b64_json"] = b64_s
+                                item["data_url"] = f"data:{ic};base64,{b64_s}"
+                            except Exception:
+                                pass
+                resp_bytes = json.dumps(resp_obj, ensure_ascii=False).encode("utf-8")
+                ctype = "application/json; charset=utf-8"
+            except Exception:
+                pass
+
+        self.send_response(status_code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(resp_bytes)))
+        self.end_headers()
+        self.wfile.write(resp_bytes)
+
     def do_GET(self):
+        if self._is_hrio_api_path():
+            self._handle_hrio_api_proxy("GET")
+            return
         if self.path.startswith("/api/ping"):
+            env_key = os.environ.get("HRIO_API_KEY", "").strip() or DEFAULT_API_KEY
             self._send_json(200, {
                 "ok": True,
                 "service": "banano2live2D-studio",
+                "has_env_key": bool(env_key),
+                "default_key": env_key,
                 "models": {
                     "image": "gemini-nano-banana-2.1",
                     "multimodal_llm": "gemini-3.8-flash",
@@ -106,11 +208,49 @@ class StudioRequestHandler(SimpleHTTPRequestHandler):
                 ],
             })
             return
+        if self.path.startswith("/api/proxy_js") or self.path.startswith("/api/proxy"):
+            import urllib.parse
+            import urllib.request
+            is_js = self.path.startswith("/api/proxy_js")
+            parsed = urllib.parse.urlparse(self.path)
+            qs = urllib.parse.parse_qs(parsed.query)
+            target_url = (qs.get("url") or [""])[0].strip()
+            req_id = (qs.get("id") or ["cb"])[0].strip()
+            if not target_url.startswith(("http://", "https://")):
+                self.send_response(400)
+                self.end_headers()
+                return
+            try:
+                req = urllib.request.Request(target_url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://hrioapi.hrio.site/"})
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    data = resp.read()
+                    ctype = resp.headers.get("Content-Type", "application/octet-stream")
+                if is_js:
+                    b64_str = base64.b64encode(data).decode("ascii")
+                    payload_obj = json.dumps({"ok": True, "mime": ctype, "b64": b64_str})
+                    payload_js = f"(window.__B2G_PROXY_RESOLVE || window.__B2L_PROXY_RESOLVE) && (window.__B2G_PROXY_RESOLVE || window.__B2L_PROXY_RESOLVE)({json.dumps(req_id)}, {payload_obj});".encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                    self.send_header("Content-Length", str(len(payload_js)))
+                    self.end_headers()
+                    self.wfile.write(payload_js)
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+            except Exception as e:
+                self._send_json(502, {"ok": False, "error": str(e)})
+            return
         if self.path in ("/", "/index.html"):
             self.path = "/web/index.html"
         return super().do_GET()
 
     def do_POST(self):
+        if self._is_hrio_api_path():
+            self._handle_hrio_api_proxy("POST")
+            return
         if self.path.startswith("/api/step1_generate_image"):
             self._handle_step1_generate_image()
             return

@@ -1,11 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Connected Component Filtering, Bounding Box Tightener & Azur Lane Joint Normalizer.
-Adapted from see-through-main (cv2.connectedComponentsWithStats & scrap_model.py)
-and Azur Lane (banerwei_3) Live2D component preparation rules.
-Supports both standard (1K/2K) and 4K (4096x4096) cells across 3x3 and 4x4 grids.
-"""
-
 from typing import Tuple, Optional
 import cv2
 import numpy as np
@@ -20,12 +13,6 @@ def clean_and_tighten(
     is_facial_feature: bool = False,
     part_name: Optional[str] = None,
 ) -> Tuple[Image.Image, Tuple[int, int, int, int]]:
-    """
-    1. Filter out edge noise, isolated specks, and inter-cell bleeds using connected components analysis.
-    2. Normalize Azur Lane shoulder/sleeve joints for body_torso, arm_left, and arm_right.
-    3. Crop tightly to the true bounding box with optional padding.
-    Returns: (tight_rgba_image, (x1, y1, x2, y2))
-    """
     arr = np.array(rgba_image)
     if arr.shape[2] < 4:
         return rgba_image, (0, 0, rgba_image.width, rgba_image.height)
@@ -34,12 +21,9 @@ def clean_and_tighten(
     h, w = alpha.shape
     cell_area = max(1, h * w)
 
-    # Scale thresholds proportionally for 4K cells (e.g. 1024x1024 per cell)
     scaled_min_area = max(min_area, int(cell_area * 0.00025))
-    scaled_sig_area = max(450, int(cell_area * 0.0038))
     scaled_pad = max(pad, int(min(h, w) * 0.006))
 
-    # Connected components
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
         (alpha > alpha_threshold).astype(np.uint8)
     )
@@ -52,6 +36,8 @@ def clean_and_tighten(
 
     mask = np.zeros_like(alpha)
     border_margin = max(2, int(min(h, w) * 0.006))
+
+    valid_lbls = []
     for lbl in range(1, num_labels):
         area = stats[lbl, cv2.CC_STAT_AREA]
         left = stats[lbl, cv2.CC_STAT_LEFT]
@@ -63,19 +49,33 @@ def clean_and_tighten(
         touches_lr = (left <= border_margin or left + width >= w - border_margin)
         touches_border = touches_tb or touches_lr
 
-        if is_facial_feature:
-            if not touches_tb and area >= scaled_min_area:
-                mask[labels == lbl] = 255
+        if part_name in ("head_base", "body_torso", "mouth"):
+            if area == max_area:
+                valid_lbls.append(lbl)
+        elif is_facial_feature:
+            if not touches_border and area >= scaled_min_area and area >= 0.05 * max_area:
+                valid_lbls.append(lbl)
         else:
-            if area >= 0.08 * max_area:
-                # Reject thin border-bleed strips from adjacent cells
-                if touches_border and area < 0.22 * max_area and (width < w * 0.08 or height < h * 0.08):
-                    continue
-                mask[labels == lbl] = 255
-            elif not touches_border and area >= scaled_sig_area and area >= 0.025 * max_area:
-                mask[labels == lbl] = 255
+            if area == max_area:
+                valid_lbls.append(lbl)
+            elif not touches_border and area >= 0.05 * max_area:
+                valid_lbls.append(lbl)
+            elif touches_border and area >= 0.35 * max_area and width >= w * 0.14 and height >= h * 0.14:
+                valid_lbls.append(lbl)
 
-    # Fallback if everything was filtered out
+    # If eyebrows cell [1,2] has both eyebrows (top) and blush ovals (bottom), keep only the top eyebrows
+    if part_name == "eyebrows" and len(valid_lbls) >= 3:
+        cys = [centroids[lbl][1] for lbl in valid_lbls]
+        min_cy, max_cy = min(cys), max(cys)
+        if (max_cy - min_cy) > h * 0.12:
+            mid_split = (min_cy + max_cy) * 0.5
+            upper_lbls = [lbl for lbl in valid_lbls if centroids[lbl][1] <= mid_split]
+            if len(upper_lbls) >= 1:
+                valid_lbls = upper_lbls
+
+    for lbl in valid_lbls:
+        mask[labels == lbl] = 255
+
     if mask.max() == 0 and max_area > 0:
         largest_lbl = 1 + int(np.argmax(areas))
         mask[labels == largest_lbl] = 255
@@ -83,7 +83,6 @@ def clean_and_tighten(
     arr[:, :, 3] = np.minimum(arr[:, :, 3], mask)
     cleaned = Image.fromarray(arr)
 
-    # Tight bounding box
     bbox = cleaned.getbbox()
     if not bbox:
         return cleaned, (0, 0, w, h)
@@ -100,65 +99,107 @@ def clean_and_tighten(
     return tight, (b_x1, b_y1, b_x2, b_y2)
 
 
+def _is_skin_tone(r: np.ndarray, g: np.ndarray, b: np.ndarray, a: np.ndarray) -> np.ndarray:
+    ri = r.astype(np.int32)
+    gi = g.astype(np.int32)
+    bi = b.astype(np.int32)
+    return (a > 15) & (ri > 175) & (gi > 120) & ((ri - bi) > 14) & (ri >= gi)
+
+
 def _clean_sleeve_cross_section(arm_img: Image.Image) -> Image.Image:
-    """
-    If the image generator drew a warm skin-colored mannequin cross-section circle
-    at the top shoulder cap of a white/light sleeve, blend it into the surrounding sleeve color
-    so the shoulder seam under the collar is invisible.
-    """
     arr = np.array(arm_img)
     ah, aw, _ = arr.shape
-    mid_slice = arr[int(ah * 0.25):int(ah * 0.55), :, :]
-    opaque_mid = mid_slice[mid_slice[:, :, 3] > 180]
-    if len(opaque_mid) > 50:
-        r_m = opaque_mid[:, 0].astype(np.int32)
-        g_m = opaque_mid[:, 1].astype(np.int32)
-        b_m = opaque_mid[:, 2].astype(np.int32)
-        neutral = opaque_mid[(np.abs(r_m - b_m) < 20) & (r_m > 180)]
-        if len(neutral) > 20:
-            sleeve_rgb = np.median(neutral[:, :3], axis=0).astype(np.uint8)
-        else:
-            return arm_img
-    else:
-        return arm_img
-
-    top_h = int(ah * 0.34)
+    # Check if top of arm has a bare-skin shoulder stump above the sleeve cuff
+    top_h = int(ah * 0.32)
     sub = arr[:top_h, :, :]
-    r = sub[:, :, 0].astype(np.int32)
-    b = sub[:, :, 2].astype(np.int32)
-    a = sub[:, :, 3]
-    is_peach_cap = (a > 40) & ((r - b) > 13) & (r > 195)
-    col_mask = np.zeros((top_h, aw), dtype=bool)
-    col_mask[:, :int(aw * 0.62)] = True
-    replace_mask = is_peach_cap & col_mask
-    sub[replace_mask, 0] = sleeve_rgb[0]
-    sub[replace_mask, 1] = sleeve_rgb[1]
-    sub[replace_mask, 2] = sleeve_rgb[2]
-    arr[:top_h, :, :] = sub
+    skin_mask = _is_skin_tone(sub[:, :, 0], sub[:, :, 1], sub[:, :, 2], sub[:, :, 3])
+    if skin_mask.sum() > (top_h * aw * 0.03):
+        # Softly fade out the bare upper-arm stump in top 22% so it tucks cleanly under the shoulder/hair
+        fade_h = int(ah * 0.20)
+        for y in range(fade_h):
+            factor = (y / float(max(1, fade_h))) ** 1.6
+            row_skin = skin_mask[y, :]
+            # Also include dark outline pixels adjacent to skin in top 15%
+            if y < int(ah * 0.14):
+                arr[y, :, 3] = (arr[y, :, 3].astype(np.float32) * factor).astype(np.uint8)
+            else:
+                arr[y, row_skin, 3] = (arr[y, row_skin, 3].astype(np.float32) * factor).astype(np.uint8)
     return Image.fromarray(arr)
 
 
 def normalize_joint_seam(img: Image.Image, part_name: str) -> Image.Image:
-    """
-    Apply Azur Lane (banerwei_3) joint normalization:
-    - body_torso: Remove bare-skin mannequin shoulder balls sticking out left/right of the collar
-      at the top 13% of an armless torso so sleeves tuck seamlessly under the collar flaps.
-    - arm_left: Clean sleeve cap and auto-orient so shoulder cap is at top-right and hand hangs down-left.
-    - arm_right: Clean sleeve cap and orient for natural right-shoulder attachment.
-    """
-    if part_name == "body_torso":
+    if part_name == "head_base":
+        arr = np.array(img)
+        hh, hw, _ = arr.shape
+        alpha = arr[:, :, 3]
+        row_widths = np.zeros(hh, dtype=np.int32)
+        for y in range(hh):
+            xs = np.where(alpha[y, :] > 25)[0]
+            if len(xs) >= 2:
+                row_widths[y] = xs[-1] - xs[0]
+        max_w = max(1, int(row_widths.max()))
+
+        # Keep full V-shaped chin AND upper neck! Only trim if neck extends excessively far below chin (> 88% height)
+        neck_cut_y = int(hh * 0.92)
+        arr = arr[:neck_cut_y, :, :]
+        hh = arr.shape[0]
+
+        # Taper upper 20% bald skull dome inward so it stays 100% hidden under front_hair bangs
+        dome_h = int(hh * 0.20)
+        for y in range(dome_h):
+            t = y / max(1.0, float(dome_h))
+            shrink = 0.48 + 0.52 * (t ** 0.65)
+            cx = hw * 0.5
+            half_allow = (max_w * 0.5) * shrink
+            for x in range(hw):
+                if abs(x - cx) > half_allow:
+                    arr[y, x, 3] = 0
+
+        out = Image.fromarray(arr)
+        bbox = out.getbbox()
+        return out.crop(bbox) if bbox else out
+
+    elif part_name == "body_torso":
         arr = np.array(img)
         th, tw, _ = arr.shape
-        if tw / max(1.0, float(th)) < 0.52:
-            top_limit = int(th * 0.13)
-            for y in range(top_limit):
-                for x in range(tw):
-                    if x < int(tw * 0.34) or x > int(tw * 0.66):
-                        r, g, b, a = arr[y, x]
-                        if a > 0 and (int(r) > 195 and int(g) > 140 and (int(r) - int(b)) > 16):
-                            arr[y, x, 3] = 0
-            return Image.fromarray(arr)
-        return img
+
+        # 1. Remove duplicate bare-skin neck above the collar in top 9% of body_torso
+        # so head_base\x27s natural V-shaped chin & neck never get covered by a duplicate neck!
+        top_neck_h = int(th * 0.095)
+        sub_top = arr[:top_neck_h, :, :]
+        top_skin = _is_skin_tone(sub_top[:, :, 0], sub_top[:, :, 1], sub_top[:, :, 2], sub_top[:, :, 3]).astype(np.uint8)
+        if top_skin.sum() > 20:
+            k_neck = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+            neck_full = cv2.dilate(top_skin, k_neck) > 0
+            sub_top[neck_full, 3] = 0
+            arr[:top_neck_h, :, :] = sub_top
+
+        # 2. Remove bare-skin shoulder stumps + their dark outlines on left (< 25% w) and right (> 75% w) in upper 38%
+        y_end = int(th * 0.38)
+        sub = arr[:y_end, :, :]
+        skin_m = _is_skin_tone(sub[:, :, 0], sub[:, :, 1], sub[:, :, 2], sub[:, :, 3])
+        side_zone = np.zeros((y_end, tw), dtype=np.uint8)
+        side_zone[:, :int(tw * 0.25)] = 1
+        side_zone[:, int(tw * 0.75):] = 1
+        stump_skin = (skin_m & (side_zone > 0)).astype(np.uint8)
+        if stump_skin.sum() > 50:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 29))
+            stump_full = (cv2.dilate(stump_skin, kernel) > 0) & (side_zone > 0)
+            sub[stump_full, 3] = 0
+            arr[:y_end, :, :] = sub
+
+        # 3. If torso is very tall (h/w > 1.55, e.g. long qipao), trim bottom 16% that is hidden under skirt_lower
+        if th / max(1.0, float(tw)) > 1.42:
+            arr[int(th * 0.72):, :, 3] = 0
+
+        num_l, lbls, stats, _ = cv2.connectedComponentsWithStats((arr[:, :, 3] > 15).astype(np.uint8))
+        if num_l > 2:
+            main_lbl = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+            arr[lbls != main_lbl, 3] = 0
+
+        out = Image.fromarray(arr)
+        bbox = out.getbbox()
+        return out.crop(bbox) if bbox else out
 
     elif part_name == "arm_left":
         cleaned = _clean_sleeve_cross_section(img)
@@ -174,16 +215,6 @@ def normalize_joint_seam(img: Image.Image, part_name: str) -> Image.Image:
 
     elif part_name == "arm_right":
         cleaned = _clean_sleeve_cross_section(img)
-        arr = np.array(cleaned)
-        ah, aw, _ = arr.shape
-        alpha = arr[:, :, 3]
-        top_Right = alpha[:int(ah * 0.25), int(aw * 0.60):]
-        mid_Left = alpha[int(ah * 0.20):int(ah * 0.55), :int(aw * 0.55)]
-        if (top_Right > 40).sum() > 80 and (mid_Left > 40).sum() > 80:
-            cleaned = cleaned.rotate(-12, resample=Image.Resampling.BICUBIC, expand=True)
-            bbox = cleaned.getbbox()
-            if bbox:
-                cleaned = cleaned.crop(bbox)
         return cleaned
 
     return img

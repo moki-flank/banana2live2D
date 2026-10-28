@@ -203,9 +203,30 @@ def slice_3x3_grid(
 
     results: Dict[str, Dict[str, Any]] = {}
 
+    # Compute per-row adaptive vertical cuts so wide Row-0 hair never gets clipped by global x_cuts
+    rgb_arr = np.array(img.convert("RGB"), dtype=np.float32)
+    bg_c = np.array([rgb_arr[0, 0], rgb_arr[0, W - 1], rgb_arr[H - 1, 0], rgb_arr[H - 1, W - 1]]).mean(axis=0)
+    fg_mask = ((np.linalg.norm(rgb_arr - bg_c, axis=2) > 18.0) & (rgb_arr.mean(axis=2) < 244.0)).astype(np.float32)
+    win_xr = max(13, int(W * 0.008))
+    x_cuts_per_row = []
+    for rr in range(grid_size):
+        ry1 = int(np.median([y_cuts_per_col[cc][rr] for cc in range(grid_size)]))
+        ry2 = int(np.median([y_cuts_per_col[cc][rr + 1] for cc in range(grid_size)]))
+        row_fg = fg_mask[ry1:ry2, :].sum(axis=0)
+        row_xs = [0]
+        for kk in range(1, grid_size):
+            nom_x = kk / float(grid_size)
+            xg = x_cuts[kk]
+            low_rx = max(row_xs[-1] + int(W * 0.13), int(W * (nom_x - 0.095)), xg - int(W * 0.075))
+            high_rx = min(int(W * (nom_x + 0.095)), xg + int(W * 0.075))
+            xk_r = _find_valley_1d(row_fg, low_rx, high_rx, window=win_xr) if high_rx > low_rx + 4 else xg
+            row_xs.append(xk_r)
+        row_xs.append(W)
+        x_cuts_per_row.append(row_xs)
+
     for name, r, c, filename in mapping:
-        x1 = x_cuts[c]
-        x2 = x_cuts[c + 1]
+        x1 = x_cuts_per_row[r][c] if r == 0 else x_cuts[c]
+        x2 = x_cuts_per_row[r][c + 1] if r == 0 else x_cuts[c + 1]
         y1 = y_cuts_per_col[c][r]
         y2 = y_cuts_per_col[c][r + 1]
 

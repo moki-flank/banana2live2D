@@ -739,7 +739,9 @@
       <!-- Stage Controls -->
       <div class="stage-controls">
         <div class="control-row" id="customMotionsBar" style="background:rgba(16,185,129,0.10); border:1px solid rgba(16,185,129,0.35); border-radius:8px; padding:6px 10px; margin-bottom:4px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
-          <span style="font-size:11px; font-weight:700; color:#6ee7b7; white-space:nowrap;">✨ gemini-3.8-flash 根据抠图+提示词生成的专属动作:</span>
+          <span style="font-size:11px; font-weight:700; color:#6ee7b7; white-space:nowrap;">✨ 专属高阶骨骼动作 (含4阶段预备/爆发/过冲/余韵):</span>
+          <button class="btn-motion" style="background:rgba(56,189,248,0.22); border-color:#38bdf8; color:#e0f2fe; font-weight:700;" onclick="loadServerCharacterPackage('dragon_empress_4x4_4k')">🐉 东煌苍龙仙子 (实测新生成)</button>
+          <button class="btn-motion" style="background:rgba(245,158,11,0.22); border-color:#f59e0b; color:#fde68a; font-weight:700;" onclick="loadServerCharacterPackage('fox_miko_4x4_4k')">🦊 重樱九尾巫女 (4×4 4K)</button>
           <div class="btn-group" id="customMotionsGroup" style="flex:1;">
             <button class="btn-motion" style="border-color:rgba(16,185,129,0.55); color:#a7f3d0;" onclick="playMotion('HappyJump', 'happyjump')">🌟 开心欢呼跳跃 (HappyJump)</button>
             <button class="btn-motion" style="border-color:rgba(16,185,129,0.55); color:#a7f3d0;" onclick="playMotion('ShyPose', 'shypose')">😳 害羞歪头卖萌 (ShyPose)</button>
@@ -793,11 +795,27 @@
           </div>
 
           <div>
-            <div class="box-title" style="margin-bottom:6px;">
-              <span>解剖图层开关 (Layers)</span>
-              <label style="font-size:11px; text-transform:none; cursor:pointer;">
-                <input type="checkbox" id="showBboxes" onchange="renderStage()"> 显示骨骼旋转锚点
-              </label>
+            <div class="box-title" style="margin-bottom:6px; flex-wrap:wrap; gap:6px;">
+              <span>高阶网格与层级骨骼透视</span>
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <label style="font-size:11px; text-transform:none; cursor:pointer; color:#38bdf8;">
+                  <input type="checkbox" id="showMeshWire" onchange="renderStage()"> 🕸️ 三角网格(ArtMesh)
+                </label>
+                <label style="font-size:11px; text-transform:none; cursor:pointer; color:#34d399;">
+                  <input type="checkbox" id="showSkeleton" onchange="renderStage()"> 🦴 26节父子骨骼树
+                </label>
+                <label style="font-size:11px; text-transform:none; cursor:pointer; color:#f59e0b;">
+                  <input type="checkbox" id="showBboxes" onchange="renderStage()"> 💠 2.5D曲面控制格
+                </label>
+              </div>
+            </div>
+            <div class="slider-row" style="margin-bottom:4px;">
+              <div class="slider-info"><span>右肘关节独立弯曲 (ParamElbowRAngle)</span><span id="valElbowR">0.0</span></div>
+              <input type="range" min="-55" max="55" step="0.5" value="0" oninput="updateParam('ParamElbowRAngle', parseFloat(this.value))">
+            </div>
+            <div class="slider-row" style="margin-bottom:6px;">
+              <div class="slider-info"><span>九尾/后饰S型波浪 (ParamTailWag)</span><span id="valTailWag">0.0</span></div>
+              <input type="range" min="-30" max="30" step="0.5" value="0" oninput="updateParam('ParamTailWag', parseFloat(this.value))">
             </div>
             <div class="layers-wrap" id="layersList"></div>
           </div>
@@ -1510,14 +1528,38 @@
       }
     }
 
+    const verletChains = {
+      hairFront: { nodes: [0, 0, 0], vels: [0, 0, 0], stiffness: 0.22, damping: 0.84 },
+      hairSideL: { nodes: [0, 0, 0], vels: [0, 0, 0], stiffness: 0.18, damping: 0.85 },
+      hairSideR: { nodes: [0, 0, 0], vels: [0, 0, 0], stiffness: 0.18, damping: 0.85 },
+      hairBack:  { nodes: [0, 0, 0], vels: [0, 0, 0], stiffness: 0.15, damping: 0.86 },
+      ears:      { nodes: [0, 0],    vels: [0, 0],    stiffness: 0.30, damping: 0.78 },
+      skirt:     { nodes: [0, 0, 0], vels: [0, 0, 0], stiffness: 0.20, damping: 0.85 },
+      tail:      { nodes: [0, 0, 0, 0], vels: [0, 0, 0, 0], stiffness: 0.14, damping: 0.88 },
+    };
+    let prevHeadX = 0, prevHeadZ = 0, prevBodyX = 0, lastPhysTime = performance.now();
+    let manualLocks = {};
+
+    function stepSpringChain(chain, drivingForce, windWave) {
+      const n = chain.nodes.length;
+      for (let i = 0; i < n; i++) {
+        const target = i === 0 ? drivingForce : chain.nodes[i - 1] * 1.18 + windWave * (i + 1) * 0.25;
+        const k = chain.stiffness * Math.pow(0.86, i);
+        const acc = (target - chain.nodes[i]) * k;
+        chain.vels[i] = (chain.vels[i] + acc) * chain.damping;
+        chain.nodes[i] += chain.vels[i];
+      }
+    }
+
     function updateMotionPhysics(now) {
       const elapsed = (now - motionStartTime) / 1000;
+      const dt = Math.min(0.05, Math.max(0.004, (now - lastPhysTime) / 1000));
+      lastPhysTime = now;
 
-      // 1. Reset transient pose parameters every frame so previous motion values never stick
-      params.ParamBreath = Math.sin(now * 0.0023) * 0.5 + 0.5;
-      params.ParamHairFront = Math.sin(now * 0.002) * 0.16;
-      params.ParamHairSide = Math.sin(now * 0.002 - 0.4) * 0.18;
-      params.ParamHairBack = Math.sin(now * 0.0018 - 0.8) * 0.20;
+      params.ParamBreath = Math.sin(now * 0.0024) * 0.5 + 0.5;
+      params.ParamHairFront = Math.sin(now * 0.0021) * 2.8;
+      params.ParamHairSide = Math.sin(now * 0.0021 - 0.5) * 3.4;
+      params.ParamHairBack = Math.sin(now * 0.0018 - 1.0) * 4.2;
 
       if (activeMotionName !== 'Idle' || !document.getElementById('chkMouseTrack').checked) {
         params.ParamAngleX = 0;
@@ -1527,10 +1569,15 @@
       }
       params.ParamBodyAngleY = 0;
       params.ParamBodyAngleZ = 0;
-      params.ParamArmLAngle = Math.sin(now * 0.0018) * 2.0;
-      params.ParamArmRAngle = Math.sin(now * 0.0020 + 1) * 2.5;
+      params.ParamArmLAngle = Math.sin(now * 0.0018) * 2.5;
+      params.ParamArmRAngle = Math.sin(now * 0.0020 + 1) * 3.0;
+      params.ParamElbowLAngle = Math.sin(now * 0.0018 - 0.6) * 4.0;
+      params.ParamElbowRAngle = Math.sin(now * 0.0020 + 0.4) * 5.0;
+      params.ParamTailWag = Math.sin(now * 0.0026) * 6.0;
+      params.ParamEarTwitch = Math.sin(now * 0.0045) * 2.5;
+      params.ParamSkirtSway = Math.sin(now * 0.0022 - 0.4) * 3.0;
       params.ParamMouthOpenY = 0;
-      params.ParamMouthForm = 0;
+      params.ParamMouthForm = 0.15;
       params.ParamEyeLSmile = 0;
       params.ParamEyeRSmile = 0;
       params.ParamCheek = 0;
@@ -1539,13 +1586,12 @@
       params.ParamEmotionExclaim = 0;
       params.ParamEmotionSweat = 0;
 
-      // 2. Auto blink
       if (now > nextBlinkTime && !isBlinking && activeMotionName !== 'Wink') {
         isBlinking = true;
         blinkStartTime = now;
       }
       if (isBlinking) {
-        const bProg = (now - blinkStartTime) / 180;
+        const bProg = (now - blinkStartTime) / 185;
         if (bProg < 1.0) {
           const close = Math.sin(bProg * Math.PI);
           params.ParamEyeLOpen = 1.0 - close;
@@ -1554,14 +1600,14 @@
           isBlinking = false;
           params.ParamEyeLOpen = 1.0;
           params.ParamEyeROpen = 1.0;
-          nextBlinkTime = now + 2600 + Math.random() * 2600;
+          nextBlinkTime = now + 2600 + Math.random() * 2400;
         }
       } else {
         params.ParamEyeLOpen = 1.0;
         params.ParamEyeROpen = 1.0;
       }
 
-      // 3. Evaluate Cubism 3 .motion3.json Curves if loaded
+      let evaluatedCurve = false;
       if (activeMotionObj && activeMotionObj.Curves && activeMotionName !== 'Idle') {
         const dur = activeMotionObj.Meta?.Duration || 3.2;
         if (elapsed > dur && !activeMotionObj.Meta?.Loop) {
@@ -1570,15 +1616,17 @@
         }
         const t = elapsed % dur;
         activeMotionObj.Curves.forEach(c => {
-          if (params.hasOwnProperty(c.Id)) {
-            params[c.Id] = evaluateSegments(c.Segments, t);
-          }
+          params[c.Id] = evaluateSegments(c.Segments, t);
         });
-        return;
-      }
-
-      // 4. Evaluate raw LLM keyframe curves (custom_motions in browser mode)
-      if (activeMotionObj && activeMotionObj.curves && activeMotionName !== 'Idle') {
+        if (!activeMotionObj.Curves.some(c => c.Id === 'ParamElbowRAngle')) {
+          params.ParamElbowRAngle = (params.ParamArmRAngle || 0) * 0.65 + Math.sin(t * 5.0) * 10;
+          params.ParamElbowLAngle = (params.ParamArmLAngle || 0) * 0.65 - Math.sin(t * 5.0) * 8;
+        }
+        if (!activeMotionObj.Curves.some(c => c.Id === 'ParamTailWag')) {
+          params.ParamTailWag = (params.ParamBodyAngleX || 0) * 1.4 + Math.sin(t * 4.5) * 14;
+        }
+        evaluatedCurve = true;
+      } else if (activeMotionObj && activeMotionObj.curves && activeMotionName !== 'Idle') {
         const dur = activeMotionObj.duration || 3.2;
         if (elapsed > dur && !activeMotionObj.loop) {
           playMotion('Idle', 'idle');
@@ -1586,101 +1634,421 @@
         }
         const t = elapsed % dur;
         for (const [paramId, pts] of Object.entries(activeMotionObj.curves)) {
-          if (params.hasOwnProperty(paramId)) {
-            params[paramId] = evaluateKeyframePairs(pts, t);
-          }
+          params[paramId] = evaluateKeyframePairs(pts, t);
         }
-        return;
+        if (!activeMotionObj.curves.ParamElbowRAngle) {
+          params.ParamElbowRAngle = (params.ParamArmRAngle || 0) * 0.68 + Math.sin(t * 5.2) * 12;
+          params.ParamElbowLAngle = (params.ParamArmLAngle || 0) * 0.68 - Math.sin(t * 5.2) * 10;
+        }
+        if (!activeMotionObj.curves.ParamTailWag) {
+          params.ParamTailWag = (params.ParamBodyAngleX || 0) * 1.5 + Math.sin(t * 4.8) * 15;
+        }
+        evaluatedCurve = true;
       }
 
-      // 5. Procedural fallback curves for Azur Lane & default custom motions
-      if (activeMotionName === 'HappyJump') {
-        if (elapsed > 3.2) { playMotion('Idle', 'idle'); return; }
-        params.ParamBodyAngleY = Math.abs(Math.sin(elapsed * 5.0)) * 12;
-        params.ParamAngleY = Math.sin(elapsed * 5.0) * 10;
-        params.ParamAngleZ = Math.sin(elapsed * 2.5) * 8;
-        params.ParamArmLAngle = -18 + Math.sin(elapsed * 5.0) * 15;
-        params.ParamArmRAngle = 18 - Math.sin(elapsed * 5.0) * 15;
-        params.ParamEyeLSmile = 1.0;
-        params.ParamCheek = 0.8;
-        params.ParamMouthOpenY = 0.7;
-        params.ParamEmotionStar = 1.0;
-      } else if (activeMotionName === 'ShyPose') {
-        if (elapsed > 3.4) { playMotion('Idle', 'idle'); return; }
-        params.ParamAngleX = -10 + Math.sin(elapsed * 2.0) * 4;
-        params.ParamAngleY = -8;
-        params.ParamAngleZ = -9 + Math.sin(elapsed * 2.0) * 3;
-        params.ParamBodyAngleX = -5;
-        params.ParamArmLAngle = 12;
-        params.ParamArmRAngle = -14;
-        params.ParamEyeLSmile = 1.0;
-        params.ParamCheek = 1.0;
-        params.ParamMouthOpenY = 0.25;
-        params.ParamEmotionHeart = 1.0;
-      } else if (activeMotionName === 'Login' || activeMotionName === 'Wave') {
-        params.ParamArmRAngle = Math.sin(elapsed * 5.5) * 18 - 8;
-        params.ParamAngleZ = Math.sin(elapsed * 2.8) * 6;
-        params.ParamMouthOpenY = (Math.sin(elapsed * 8) + 1) * 0.35;
-      } else if (activeMotionName === 'Home') {
-        params.ParamAngleZ = Math.sin(elapsed * 1.8) * 5;
-        params.ParamBodyAngleX = Math.sin(elapsed * 1.8) * 4;
-      } else if (activeMotionName === 'TouchHead') {
-        params.ParamAngleY = -8 + Math.sin(elapsed * 4) * 5;
-        params.ParamAngleZ = Math.sin(elapsed * 3) * 7;
-        params.ParamEyeLSmile = 1.0;
-        params.ParamCheek = 0.85;
-        params.ParamEmotionHeart = 0.9;
-      } else if (activeMotionName === 'TouchBody') {
-        params.ParamBodyAngleY = Math.sin(elapsed * 6) * 6;
-        params.ParamAngleX = Math.sin(elapsed * 5) * 10;
-        params.ParamArmLAngle = Math.sin(elapsed * 5) * 12;
-        params.ParamCheek = 0.5;
-      } else if (activeMotionName === 'TouchSpecial') {
-        params.ParamAngleX = Math.sin(elapsed * 9) * 14;
-        params.ParamBodyAngleZ = Math.sin(elapsed * 7) * 6;
-        params.ParamArmLAngle = 15;
-        params.ParamArmRAngle = -15;
-        params.ParamCheek = 1.0;
-        params.ParamMouthOpenY = 0.65;
-        params.ParamEmotionExclaim = 1.0;
-      } else if (activeMotionName.startsWith('Main')) {
-        params.ParamMouthOpenY = (Math.sin(elapsed * 9.5) + 1) * 0.42;
-        params.ParamAngleX = Math.sin(elapsed * 2.2) * 8;
-        params.ParamArmRAngle = activeMotionName === 'Main2' ? Math.sin(elapsed * 4.5) * 16 : 0;
-      } else if (activeMotionName === 'Wedding') {
-        params.ParamAngleZ = Math.sin(elapsed * 2) * 6;
-        params.ParamEyeLSmile = 1.0;
-        params.ParamCheek = 0.95;
-        params.ParamMouthOpenY = 0.35;
-        params.ParamEmotionHeart = 1.0;
-      } else if (activeMotionName === 'Wink') {
-        params.ParamEyeLOpen = 0.0;
-        params.ParamAngleZ = -6;
-        params.ParamMouthOpenY = 0.3;
-        params.ParamEmotionStar = 0.9;
+      if (!evaluatedCurve) {
+        if (activeMotionName === 'HappyJump') {
+          if (elapsed > 3.2) { playMotion('Idle', 'idle'); return; }
+          const crouch = elapsed < 0.35 ? -Math.sin((elapsed / 0.35) * Math.PI) * 10 : 0;
+          const jump = elapsed >= 0.35 ? Math.abs(Math.sin((elapsed - 0.35) * 4.8)) * 16 * Math.exp(-(elapsed - 0.35) * 0.35) : 0;
+          params.ParamBodyAngleY = crouch + jump;
+          params.ParamAngleY = crouch * 0.8 + Math.sin(elapsed * 5.0) * 12;
+          params.ParamAngleZ = Math.sin(elapsed * 2.8) * 9;
+          params.ParamArmLAngle = -24 + Math.sin(elapsed * 5.2) * 16;
+          params.ParamArmRAngle = 26 - Math.sin(elapsed * 5.2) * 16;
+          params.ParamElbowLAngle = -32 + Math.sin(elapsed * 5.2 - 0.4) * 18;
+          params.ParamElbowRAngle = 35 - Math.sin(elapsed * 5.2 - 0.4) * 18;
+          params.ParamTailWag = Math.sin(elapsed * 6.5) * 22;
+          params.ParamEarTwitch = Math.sin(elapsed * 9.0) * 12;
+          params.ParamEyeLSmile = 1.0;
+          params.ParamCheek = 0.85;
+          params.ParamMouthOpenY = 0.75;
+          params.ParamMouthForm = 0.9;
+          params.ParamEmotionStar = 1.0;
+        } else if (activeMotionName === 'ShyPose') {
+          if (elapsed > 3.4) { playMotion('Idle', 'idle'); return; }
+          params.ParamAngleX = -14 + Math.sin(elapsed * 2.2) * 5;
+          params.ParamAngleY = -12;
+          params.ParamAngleZ = -11 + Math.sin(elapsed * 2.2) * 3;
+          params.ParamBodyAngleX = -8;
+          params.ParamArmLAngle = 18;
+          params.ParamArmRAngle = -22;
+          params.ParamElbowLAngle = 38;
+          params.ParamElbowRAngle = -42;
+          params.ParamTailWag = Math.sin(elapsed * 3.5) * 10;
+          params.ParamEyeLSmile = 1.0;
+          params.ParamCheek = 1.0;
+          params.ParamMouthOpenY = 0.25;
+          params.ParamMouthForm = -0.4;
+          params.ParamEmotionHeart = 1.0;
+        } else if (activeMotionName === 'Login' || activeMotionName === 'Wave') {
+          params.ParamArmRAngle = 24 + Math.sin(elapsed * 5.5) * 14;
+          params.ParamElbowRAngle = 32 + Math.sin(elapsed * 5.5 - 0.45) * 24;
+          params.ParamAngleZ = Math.sin(elapsed * 2.8) * 7;
+          params.ParamAngleX = Math.sin(elapsed * 2.8) * 8;
+          params.ParamTailWag = Math.sin(elapsed * 4.2) * 16;
+          params.ParamMouthOpenY = (Math.sin(elapsed * 8) + 1) * 0.38;
+          params.ParamMouthForm = 0.75;
+        } else if (activeMotionName === 'TouchHead') {
+          params.ParamAngleY = -10 + Math.sin(elapsed * 4.2) * 6;
+          params.ParamAngleZ = Math.sin(elapsed * 3.2) * 8;
+          params.ParamElbowLAngle = 20;
+          params.ParamElbowRAngle = -20;
+          params.ParamEarTwitch = Math.sin(elapsed * 10.0) * 15;
+          params.ParamTailWag = Math.sin(elapsed * 5.5) * 18;
+          params.ParamEyeLSmile = 1.0;
+          params.ParamCheek = 0.9;
+          params.ParamMouthForm = 0.85;
+          params.ParamEmotionHeart = 0.95;
+        } else if (activeMotionName === 'TouchSpecial') {
+          params.ParamAngleX = Math.sin(elapsed * 9.0) * 15;
+          params.ParamBodyAngleY = 10 * Math.exp(-elapsed * 1.2);
+          params.ParamBodyAngleZ = Math.sin(elapsed * 7.0) * 7;
+          params.ParamArmLAngle = 22;
+          params.ParamArmRAngle = -22;
+          params.ParamElbowLAngle = 45;
+          params.ParamElbowRAngle = -45;
+          params.ParamTailWag = Math.sin(elapsed * 11.0) * 24;
+          params.ParamCheek = 1.0;
+          params.ParamMouthOpenY = 0.7;
+          params.ParamMouthForm = -0.7;
+          params.ParamEmotionExclaim = 1.0;
+        } else if (activeMotionName.startsWith('Main')) {
+          params.ParamMouthOpenY = (Math.sin(elapsed * 9.5) + 1) * 0.42;
+          params.ParamAngleX = Math.sin(elapsed * 2.2) * 9;
+          params.ParamAngleZ = Math.sin(elapsed * 1.8) * 5;
+          params.ParamArmRAngle = activeMotionName === 'Main2' ? 22 + Math.sin(elapsed * 4.5) * 12 : Math.sin(elapsed * 3.0) * 10;
+          params.ParamElbowRAngle = activeMotionName === 'Main2' ? 36 + Math.sin(elapsed * 4.5 - 0.4) * 18 : Math.sin(elapsed * 3.0 - 0.4) * 14;
+          params.ParamTailWag = Math.sin(elapsed * 3.6) * 14;
+        } else if (activeMotionName === 'Wedding') {
+          params.ParamAngleZ = Math.sin(elapsed * 2.0) * 6;
+          params.ParamArmLAngle = 14;
+          params.ParamArmRAngle = -16;
+          params.ParamElbowLAngle = 28;
+          params.ParamElbowRAngle = -32;
+          params.ParamTailWag = Math.sin(elapsed * 3.2) * 16;
+          params.ParamEyeLSmile = 1.0;
+          params.ParamCheek = 0.95;
+          params.ParamMouthOpenY = 0.35;
+          params.ParamMouthForm = 0.95;
+          params.ParamEmotionHeart = 1.0;
+        } else if (activeMotionName === 'Wink') {
+          params.ParamEyeLOpen = 0.0;
+          params.ParamAngleZ = -7;
+          params.ParamElbowRAngle = 28;
+          params.ParamMouthOpenY = 0.32;
+          params.ParamMouthForm = 0.8;
+          params.ParamEmotionStar = 0.95;
+        }
       }
+
+      for (const [k, v] of Object.entries(manualLocks)) {
+        if (now - v.time < 4500) {
+          params[k] = v.value;
+        } else {
+          delete manualLocks[k];
+        }
+      }
+
+      const headVelX = (params.ParamAngleX - prevHeadX) / Math.max(0.008, dt);
+      const headVelZ = (params.ParamAngleZ - prevHeadZ) / Math.max(0.008, dt);
+      const bodyVelX = (params.ParamBodyAngleX - prevBodyX) / Math.max(0.008, dt);
+      prevHeadX = params.ParamAngleX;
+      prevHeadZ = params.ParamAngleZ;
+      prevBodyX = params.ParamBodyAngleX;
+
+      const wind = Math.sin(now * 0.0022) * 3.2;
+      const headDrive = -headVelX * 0.085 - headVelZ * 0.065 + params.ParamAngleZ * 0.55 + params.ParamHairFront;
+      stepSpringChain(verletChains.hairFront, headDrive, wind);
+      stepSpringChain(verletChains.hairSideL, headDrive * 1.15 - params.ParamAngleX * 0.3, wind * 1.1);
+      stepSpringChain(verletChains.hairSideR, headDrive * 1.15 - params.ParamAngleX * 0.3, wind * 1.1);
+      stepSpringChain(verletChains.hairBack, -headVelX * 0.095 + params.ParamHairBack, wind * 1.25);
+      stepSpringChain(verletChains.ears, -headVelX * 0.06 + (params.ParamEarTwitch || 0), Math.sin(now * 0.005) * 1.8);
+      stepSpringChain(verletChains.skirt, -bodyVelX * 0.11 + (params.ParamSkirtSway || 0) + params.ParamBodyAngleX * 0.5, wind * 0.9);
+      stepSpringChain(verletChains.tail, -bodyVelX * 0.12 + (params.ParamTailWag || 0), Math.sin(now * 0.0032) * 4.5);
+    }
+    function solveSkeletonFK(scaleRatio) {
+      const parts = activeCharacter.parts || {};
+      const getCenter = (name, defX, defY) => {
+        const c = parts[name]?.center || parts[name]?.canvas_center;
+        return c ? [c[0], c[1]] : [defX, defY];
+      };
+
+      const [hx0, hy0] = getCenter('head_base', 500, 256);
+      const is4x4 = Boolean(parts.skirt_lower || parts.legs_stockings);
+      const [tx0, ty0] = getCenter('body_torso', 500, is4x4 ? 455 : 620);
+      const [sx0, sy0] = getCenter('skirt_lower', 500, 552);
+      const [alx0, aly0] = getCenter('arm_left', 410, 465);
+      const [arx0, ary0] = getCenter('arm_right', 590, 462);
+      const [lx0, ly0] = getCenter('legs_stockings', 500, 775);
+      const [earX0, earY0] = getCenter('headwear_ears', 500, 180);
+      const [tailX0, tailY0] = getCenter('back_tail_wings', 505, 525);
+      const [propX0, propY0] = getCenter('hand_prop_effect', 645, 445);
+
+      const deg2rad = Math.PI / 180;
+      const bodyShiftX = params.ParamBodyAngleX * 0.52;
+      const bodyShiftY = -params.ParamBreath * 3.2 - params.ParamBodyAngleY * 0.55;
+      const pelvisRot = params.ParamBodyAngleZ * 0.45 * deg2rad;
+      const chestRot = params.ParamBodyAngleZ * 0.85 * deg2rad;
+      const headRot = chestRot + params.ParamAngleZ * deg2rad;
+
+      const rotVec = (dx, dy, ang) => {
+        const c = Math.cos(ang), s = Math.sin(ang);
+        return [dx * c - dy * s, dx * s + dy * c];
+      };
+
+      const pelvis = { x: tx0 + bodyShiftX * 0.65, y: (is4x4 ? ty0 + 62 : ty0 + 35) + bodyShiftY * 0.5, rot: pelvisRot };
+      const [cdx, cdy] = rotVec(0, is4x4 ? -75 : -55, pelvisRot);
+      const spine_chest = { x: pelvis.x + cdx + bodyShiftX * 0.35, y: pelvis.y + cdy + bodyShiftY * 0.5, rot: chestRot };
+
+      const [ndx, ndy] = rotVec(0, (hy0 + 82) - ty0, chestRot);
+      const neck = { x: spine_chest.x + ndx, y: spine_chest.y + ndy, rot: chestRot };
+
+      const [hdx, hdy] = rotVec(params.ParamAngleX * 0.45, (hy0 - (hy0 + 82)) + params.ParamAngleY * 0.35, headRot);
+      const head = { x: neck.x + hdx, y: neck.y + hdy, rot: headRot };
+
+      const cj = activeCharacter.skeleton?.computed_joints || {};
+      const shL0 = cj.shoulder_L || [alx0 + 18, aly0 - 62];
+      const elL0 = cj.elbow_L || [alx0, aly0];
+      const wrL0 = cj.wrist_L || [alx0 - 22, aly0 + 64];
+      const shR0 = cj.shoulder_R || [arx0 - 18, ary0 - 62];
+      const elR0 = cj.elbow_R || [arx0, ary0];
+      const wrR0 = cj.wrist_R || [arx0 + 24, ary0 + 62];
+
+      const [sldx, sldy] = rotVec(shL0[0] - tx0, shL0[1] - ty0, chestRot);
+      const shoulder_L = { x: spine_chest.x + sldx, y: spine_chest.y + sldy, rot: chestRot + (params.ParamArmLAngle || 0) * deg2rad };
+      const [eldx, eldy] = rotVec(elL0[0] - shL0[0], elL0[1] - shL0[1], shoulder_L.rot);
+      const elbow_L = { x: shoulder_L.x + eldx, y: shoulder_L.y + eldy, rot: shoulder_L.rot + (params.ParamElbowLAngle || 0) * deg2rad };
+      const [wldx, wldy] = rotVec(wrL0[0] - elL0[0], wrL0[1] - elL0[1], elbow_L.rot);
+      const wrist_L = { x: elbow_L.x + wldx, y: elbow_L.y + wldy, rot: elbow_L.rot };
+
+      const [srdx, srdy] = rotVec(shR0[0] - tx0, shR0[1] - ty0, chestRot);
+      const shoulder_R = { x: spine_chest.x + srdx, y: spine_chest.y + srdy, rot: chestRot + (params.ParamArmRAngle || 0) * deg2rad };
+      const [erdx, erdy] = rotVec(elR0[0] - shR0[0], elR0[1] - shR0[1], shoulder_R.rot);
+      const elbow_R = { x: shoulder_R.x + erdx, y: shoulder_R.y + erdy, rot: shoulder_R.rot + (params.ParamElbowRAngle || 0) * deg2rad };
+      const [wrdx, wrdy] = rotVec(wrR0[0] - elR0[0], wrR0[1] - elR0[1], elbow_R.rot);
+      const wrist_R = { x: elbow_R.x + wrdx, y: elbow_R.y + wrdy, rot: elbow_R.rot };
+      const [prdx, prdy] = rotVec(propX0 - (arx0 + 6), propY0 - (ary0 + 40), elbow_R.rot);
+      const prop_joint = { x: wrist_R.x + prdx, y: wrist_R.y + prdy, rot: elbow_R.rot };
+
+      const hf = verletChains.hairFront.nodes;
+      const hsL = verletChains.hairSideL.nodes;
+      const hsR = verletChains.hairSideR.nodes;
+      const hb = verletChains.hairBack.nodes;
+      const earN = verletChains.ears.nodes;
+      const skN = verletChains.skirt.nodes;
+      const tlN = verletChains.tail.nodes;
+
+      return {
+        scaleRatio,
+        pelvis, spine_chest, neck, head,
+        shoulder_L, elbow_L, wrist_L,
+        shoulder_R, elbow_R, wrist_R, prop_joint,
+        rest: {
+          head: [hx0, hy0], torso: [tx0, ty0], skirt: [sx0, sy0],
+          arm_left: [alx0, aly0], arm_right: [arx0, ary0],
+          legs: [lx0, ly0], ears: [earX0, earY0], tail: [tailX0, tailY0], prop: [propX0, propY0]
+        },
+        chains: { hf, hsL, hsR, hb, earN, skN, tlN }
+      };
+    }
+
+    function drawTexturedTriangle(ctx, img, u0, v0, u1, v1, u2, v2, x0, y0, x1, y1, x2, y2) {
+      const cx = (x0 + x1 + x2) / 3;
+      const cy = (y0 + y1 + y2) / 3;
+      const expand = (px, py) => {
+        const dx = px - cx, dy = py - cy;
+        const len = Math.hypot(dx, dy) || 1;
+        return [px + (dx / len) * 0.48, py + (dy / len) * 0.48];
+      };
+      const [ex0, ey0] = expand(x0, y0);
+      const [ex1, ey1] = expand(x1, y1);
+      const [ex2, ey2] = expand(x2, y2);
+
+      const det = (u1 - u0) * (v2 - v0) - (u2 - u0) * (v1 - v0);
+      if (Math.abs(det) < 1e-5) return;
+      const idet = 1.0 / det;
+
+      const a = ((x1 - x0) * (v2 - v0) - (x2 - x0) * (v1 - v0)) * idet;
+      const b = ((y1 - y0) * (v2 - v0) - (y2 - y0) * (v1 - v0)) * idet;
+      const c = ((u1 - u0) * (x2 - x0) - (u2 - u0) * (x1 - x0)) * idet;
+      const d = ((u1 - u0) * (y2 - y0) - (u2 - u0) * (y1 - y0)) * idet;
+      const e = x0 - a * u0 - c * v0;
+      const f = y0 - b * u0 - d * v0;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(ex0, ey0);
+      ctx.lineTo(ex1, ey1);
+      ctx.lineTo(ex2, ey2);
+      ctx.closePath();
+      ctx.clip();
+      ctx.transform(a, b, c, d, e, f);
+      ctx.drawImage(img, 0, 0);
+      ctx.restore();
+    }
+
+    function deformPartVertex(key, nx, ny, baseX, baseY, drawW, drawH, skel, now) {
+      const sr = skel.scaleRatio;
+      const rx = (nx - 0.5) * 2.0;
+      const ry = (ny - 0.5) * 2.0;
+      const yaw = params.ParamAngleX / 30.0;
+
+      let x = baseX;
+      let y = baseY;
+
+      const rotAround = (px, py, ox, oy, ang) => {
+        const c = Math.cos(ang), s = Math.sin(ang);
+        const dx = px - ox, dy = py - oy;
+        return [ox + dx * c - dy * s, oy + dx * s + dy * c];
+      };
+
+      const { hf, hsL, hsR, hb, earN, skN, tlN } = skel.chains;
+
+      if (key === 'head_base' || key === 'front_hair' || key === 'side_hair' || key === 'back_hair' ||
+          key === 'headwear_ears' || key.startsWith('eyes') || key === 'eyebrows' || key === 'mouth') {
+
+        const hRestX = skel.rest.head[0] * sr;
+
+        if (key === 'back_hair') {
+          x += (-params.ParamAngleX * 0.36) * sr;
+          y += (-params.ParamAngleY * 0.25) * sr;
+          const w1 = Math.pow(ny, 1.35);
+          const w2 = Math.pow(ny, 2.2);
+          x += (hb[0] * 0.45 * w1 + hb[2] * 0.85 * w2) * sr;
+          y += Math.abs(hb[1]) * 0.12 * w2 * sr;
+        } else {
+          const sphereBulge = (1.0 - Math.min(1.0, rx * rx * 0.65));
+          const parallaxFactor = key === 'front_hair' ? 0.62 : (key === 'headwear_ears' ? 0.68 : (key === 'side_hair' ? 0.54 : 0.46));
+          x += (params.ParamAngleX * parallaxFactor * (0.7 + 0.3 * sphereBulge)) * sr;
+          y += (params.ParamAngleY * (parallaxFactor * 0.74) + rx * params.ParamAngleX * -0.06 * ry) * sr;
+          const foreshorten = 1.0 - rx * yaw * 0.11;
+          x = hRestX + (x - hRestX) * foreshorten;
+        }
+
+        if (key === 'front_hair') {
+          const bendW = Math.pow(Math.max(0, ny - 0.12) / 0.88, 1.5);
+          x += (hf[0] * 0.4 * bendW + hf[2] * 0.65 * bendW * bendW) * sr;
+        } else if (key === 'side_hair') {
+          const chain = nx < 0.5 ? hsL : hsR;
+          const w1 = Math.pow(ny, 1.3);
+          const w2 = Math.pow(ny, 2.1);
+          x += (chain[0] * 0.5 * w1 + chain[2] * 0.95 * w2) * sr;
+          y += Math.abs(chain[1]) * 0.15 * w2 * sr;
+        } else if (key === 'headwear_ears') {
+          const earTipW = Math.pow(1.0 - ny, 1.4);
+          const sideSign = nx < 0.5 ? -1 : 1;
+          x += (earN[1] * 0.85 * earTipW) * sr;
+          y += (Math.sin(now * 0.006 + sideSign) * 2.2 * earTipW - Math.abs(earN[0]) * 0.25 * earTipW) * sr;
+        } else if (key.startsWith('eyes')) {
+          const eyeOpen = Math.min(params.ParamEyeLOpen, params.ParamEyeROpen);
+          const squeeze = 1.0 - Math.max(0.18, eyeOpen);
+          if (key === 'eyes_open' && ny < 0.6) {
+            y += squeeze * drawH * 0.42 * (1.0 - ny);
+          }
+          x += (params.ParamEyeBallX * 6.5 * (1.0 - Math.abs(ry) * 0.35)) * sr;
+          y += (-params.ParamEyeBallY * 4.8) * sr;
+        } else if (key === 'eyebrows') {
+          const smileLift = (params.ParamEyeLSmile || 0) * -2.5 - (params.ParamMouthOpenY || 0) * 3.0;
+          const innerArch = (1.0 - Math.abs(rx)) * (params.ParamMouthForm || 0) * -2.5;
+          y += (smileLift + innerArch) * sr;
+        } else if (key === 'mouth') {
+          const cornerW = Math.abs(rx);
+          const mForm = params.ParamMouthForm || 0;
+          y += (-mForm * cornerW * drawH * 0.22);
+          if (ny > 0.45) {
+            y += Math.max(0, params.ParamMouthOpenY) * drawH * 0.52 * ((ny - 0.45) / 0.55);
+          }
+          x = (baseX + drawW * 0.5) + (x - (baseX + drawW * 0.5)) * (0.92 + Math.max(0, params.ParamMouthOpenY) * 0.18 + mForm * 0.08);
+        }
+
+        const headShiftX = (skel.head.x - skel.rest.head[0]) * sr;
+        const headShiftY = (skel.head.y - skel.rest.head[1]) * sr;
+        let neckLock = 1.0;
+        if (key === 'head_base' && ny > 0.72) {
+          neckLock = 1.0 - ((ny - 0.72) / 0.28) * 0.65;
+        }
+        x += headShiftX * neckLock + (skel.spine_chest.x - skel.rest.torso[0]) * sr * (1.0 - neckLock);
+        y += headShiftY * neckLock + (skel.spine_chest.y - skel.rest.torso[1]) * sr * (1.0 - neckLock);
+        [x, y] = rotAround(x, y, skel.head.x * sr, skel.head.y * sr, skel.head.rot * neckLock);
+
+      } else if (key === 'body_torso') {
+        const chestW = 1.0 - ny * 0.65;
+        const breathScale = 1.0 + params.ParamBreath * 0.022 * chestW;
+        const torsoCx = skel.spine_chest.x * sr;
+        const torsoCy = skel.spine_chest.y * sr;
+        x = torsoCx + (x - skel.rest.torso[0] * sr) * breathScale * (1.0 - rx * yaw * 0.07);
+        y = torsoCy + (y - skel.rest.torso[1] * sr) * (1.0 + params.ParamBreath * 0.014 * chestW);
+        [x, y] = rotAround(x, y, skel.pelvis.x * sr, skel.pelvis.y * sr, skel.spine_chest.rot * chestW);
+
+      } else if (key === 'skirt_lower') {
+        const hemW = Math.pow(ny, 1.45);
+        const pleatRipple = Math.sin(nx * Math.PI * 3.0 + now * 0.004) * (2.5 + Math.abs(skN[1]) * 0.25) * hemW;
+        x += ((skel.pelvis.x - skel.rest.torso[0]) + skN[0] * 0.45 * hemW + skN[2] * 0.85 * hemW * hemW) * sr + pleatRipple * sr;
+        y += ((skel.pelvis.y - (skel.rest.torso[1] + 62)) + Math.abs(skN[1]) * 0.12 * hemW) * sr;
+        [x, y] = rotAround(x, y, skel.pelvis.x * sr, skel.pelvis.y * sr, skel.pelvis.rot * (1.0 - hemW * 0.4));
+
+      } else if (key === 'arm_left' || key === 'arm_right') {
+        const isLeft = key === 'arm_left';
+        const shoulder = isLeft ? skel.shoulder_L : skel.shoulder_R;
+        const elbow = isLeft ? skel.elbow_L : skel.elbow_R;
+        const restShX = (skel.rest.torso[0] + (isLeft ? -62 : 62)) * sr;
+        const restShY = (skel.rest.torso[1] - 52) * sr;
+        const shX = shoulder.x * sr, shY = shoulder.y * sr;
+
+        let [ux, uy] = rotAround(x + (shX - restShX), y + (shY - restShY), shX, shY, shoulder.rot);
+
+        const forearmWeight = Math.max(0, Math.min(1, (ny - 0.35) / 0.35));
+        if (forearmWeight > 0.001) {
+          const elbowDeltaAng = (elbow.rot - shoulder.rot) * forearmWeight;
+          [ux, uy] = rotAround(ux, uy, elbow.x * sr, elbow.y * sr, elbowDeltaAng);
+        }
+        x = ux;
+        y = uy;
+
+      } else if (key === 'hand_prop_effect') {
+        const restPx = skel.rest.prop[0] * sr;
+        const restPy = skel.rest.prop[1] * sr;
+        const curPx = skel.prop_joint.x * sr;
+        const curPy = skel.prop_joint.y * sr;
+        const floatY = Math.sin(now * 0.0045) * 3.5 * sr;
+        [x, y] = rotAround(x + (curPx - restPx), y + (curPy - restPy) + floatY, curPx, curPy, skel.prop_joint.rot * 0.85);
+
+      } else if (key === 'back_tail_wings') {
+        const distFromSpine = Math.hypot(rx * 0.85, ry * 0.65);
+        const tailW1 = Math.pow(Math.min(1.2, distFromSpine), 1.35);
+        const tailW2 = Math.pow(Math.min(1.2, distFromSpine), 2.1);
+        const sWave = Math.sin(ny * Math.PI * 1.8 - now * 0.0045) * (6.0 + Math.abs(tlN[2]) * 0.4) * tailW1;
+        x += ((skel.pelvis.x - skel.rest.torso[0]) + tlN[0] * 0.45 * tailW1 + tlN[3] * 0.95 * tailW2 + sWave) * sr;
+        y += ((skel.pelvis.y - (skel.rest.torso[1] + 62)) + Math.sin(now * 0.0032 + rx * 1.5) * 4.5 * tailW1) * sr;
+        [x, y] = rotAround(x, y, skel.pelvis.x * sr, skel.pelvis.y * sr, skel.pelvis.rot * 0.7);
+
+      } else if (key === 'legs_stockings') {
+        const plantWeight = 1.0 - Math.pow(ny, 1.2);
+        x += (skel.pelvis.x - skel.rest.torso[0]) * sr * plantWeight;
+        y += (skel.pelvis.y - (skel.rest.torso[1] + 62)) * sr * plantWeight * 0.6;
+      }
+
+      return [x, y];
     }
 
     function renderStage(now = performance.now()) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const parts = activeCharacter.parts;
-      const sortedKeys = Object.keys(parts).sort((a, b) => parts[a].z_index - parts[b].z_index);
+      const parts = activeCharacter.parts || {};
+      const sortedKeys = Object.keys(parts).sort((a, b) => (parts[a].z_index || 0) - (parts[b].z_index || 0));
       const scaleRatio = canvas.width / (activeCharacter.canvas?.width || 1000);
-      const showBboxes = document.getElementById('showBboxes').checked;
 
-      const isEyeClosed = (Math.min(params.ParamEyeLOpen, params.ParamEyeROpen) < 0.42) || (params.ParamEyeLSmile > 0.6);
+      const showMeshWire = document.getElementById('showMeshWire')?.checked;
+      const showSkeleton = document.getElementById('showSkeleton')?.checked;
+      const showWarpGrid = document.getElementById('showBboxes')?.checked;
 
-      const bodyOffsetX = params.ParamBodyAngleX * 0.35;
-      const bodyOffsetY = -params.ParamBreath * 2.5 - params.ParamBodyAngleY * 0.45;
-      const bodyRot = params.ParamBodyAngleZ * 0.4 * Math.PI / 180;
+      const eyeOpenVal = Math.min(params.ParamEyeLOpen, params.ParamEyeROpen);
+      const isEyeClosed = (eyeOpenVal < 0.25) || (params.ParamEyeLSmile > 0.6);
 
-      // Normalize hair sway whether driven by small procedural radians (0.16) or .motion3.json degrees (-8..+8)
-      const hairFrontPx = Math.abs(params.ParamHairFront) > 1.2 ? params.ParamHairFront * 0.55 : params.ParamHairFront * 10;
-      const hairBackPx = Math.abs(params.ParamHairBack) > 1.2 ? params.ParamHairBack * 0.65 : params.ParamHairBack * 12;
-      const hairSideDeg = Math.abs(params.ParamHairSide) > 1.2 ? params.ParamHairSide * 0.35 : params.ParamHairSide * 4;
+      const skel = solveSkeletonFK(scaleRatio);
 
-      sortedKeys.forEach(key => {
+      sortedKeys.forEach((key, partIdx) => {
         if (!layerVisibility[key] && !(key === 'eyes_closed' && isEyeClosed)) return;
         if (key === 'eyes_open' && isEyeClosed) return;
         if (key === 'eyes_closed' && !isEyeClosed) return;
@@ -1689,112 +2057,164 @@
         const img = partsImages[key];
         if (!img) return;
 
-        ctx.save();
-
-        let offsetX = bodyOffsetX;
-        let offsetY = bodyOffsetY;
-        let rotation = bodyRot;
-        let scaleX = 1.0;
-        let scaleY = 1.0;
-
-        const pivot = p.pivot || [0.5, 0.5];
-        const center = p.center || [500, 500];
+        const center = p.center || p.canvas_center || [500, 500];
         const partScale = p.scale || 1.0;
-
         const drawW = img.width * partScale * scaleRatio;
         const drawH = img.height * partScale * scaleRatio;
-        const pasteX = center[0] * scaleRatio - drawW / 2;
-        const pasteY = center[1] * scaleRatio - drawH / 2;
-        const anchorX = pasteX + drawW * pivot[0];
-        const anchorY = pasteY + drawH * pivot[1];
+        const baseX = center[0] * scaleRatio - drawW / 2;
+        const baseY = center[1] * scaleRatio - drawH / 2;
 
-        if (key === 'front_hair') {
-          offsetX += params.ParamAngleX * 0.58 + hairFrontPx;
-          offsetY += params.ParamAngleY * 0.42;
-          rotation += (params.ParamAngleZ + params.ParamAngleX * 0.14 + hairSideDeg) * Math.PI / 180;
-        } else if (key === 'side_hair') {
-          offsetX += params.ParamAngleX * 0.50 + hairFrontPx * 0.85;
-          offsetY += params.ParamAngleY * 0.36;
-          rotation += (params.ParamAngleZ * 1.05 + hairSideDeg * 1.35) * Math.PI / 180;
-        } else if (key === 'headwear_ears') {
-          offsetX += params.ParamAngleX * 0.64 + hairFrontPx * 0.55;
-          offsetY += params.ParamAngleY * 0.46 - Math.abs(params.ParamBreath) * 1.5;
-          rotation += (params.ParamAngleZ * 1.12 + hairSideDeg * 0.9) * Math.PI / 180;
-        } else if (key === 'back_hair') {
-          offsetX += -params.ParamAngleX * 0.30 + hairBackPx;
-          offsetY += -params.ParamAngleY * 0.22;
-          rotation += (params.ParamAngleZ * 0.85 - params.ParamAngleX * 0.10) * Math.PI / 180;
-        } else if (key === 'back_tail_wings') {
-          offsetX += -params.ParamBodyAngleX * 0.45 + hairBackPx * 1.25;
-          offsetY += Math.sin(now * 0.0032) * 3.5;
-          rotation += (params.ParamBodyAngleZ * 0.8 + hairSideDeg * 1.6) * Math.PI / 180;
-        } else if (key === 'head_base') {
-          offsetX += params.ParamAngleX * 0.40;
-          offsetY += params.ParamAngleY * 0.30;
-          rotation += params.ParamAngleZ * Math.PI / 180;
-        } else if (key.startsWith('eyes')) {
-          offsetX += params.ParamAngleX * 0.46 + params.ParamEyeBallX * 6;
-          offsetY += params.ParamAngleY * 0.34 - params.ParamEyeBallY * 4.5;
-          rotation += params.ParamAngleZ * Math.PI / 180;
-        } else if (key === 'eyebrows') {
-          offsetX += params.ParamAngleX * 0.48;
-          offsetY += params.ParamAngleY * 0.35 - params.ParamMouthOpenY * 3.2 - params.ParamEyeLSmile * 2.0;
-          rotation += params.ParamAngleZ * Math.PI / 180;
-        } else if (key === 'mouth') {
-          offsetX += params.ParamAngleX * 0.43;
-          offsetY += params.ParamAngleY * 0.32;
-          rotation += params.ParamAngleZ * Math.PI / 180;
-          scaleY = 0.72 + Math.max(0, params.ParamMouthOpenY) * 0.65;
-        } else if (key === 'body_torso') {
-          scaleY = 1.0 + params.ParamBreath * 0.014;
-        } else if (key === 'skirt_lower') {
-          offsetX += hairBackPx * 0.45;
-          rotation += (hairSideDeg * 0.65 + params.ParamBodyAngleX * 0.22) * Math.PI / 180;
-          scaleX = 1.0 + params.ParamBreath * 0.012;
-        } else if (key === 'legs_stockings') {
-          offsetX = bodyOffsetX * 0.25;
-          offsetY = -params.ParamBodyAngleY * 0.15;
-          rotation = bodyRot * 0.25;
-        } else if (key === 'arm_left') {
-          rotation += params.ParamArmLAngle * Math.PI / 180;
-        } else if (key === 'arm_right') {
-          rotation += params.ParamArmRAngle * Math.PI / 180;
-        } else if (key === 'hand_prop_effect') {
-          offsetX += params.ParamArmRAngle * 0.65;
-          offsetY += Math.sin(now * 0.004) * 4.0 - params.ParamArmRAngle * 0.45;
-          rotation += (params.ParamArmRAngle * 1.15) * Math.PI / 180;
+        const isHighDetail = ['back_tail_wings', 'back_hair', 'front_hair', 'side_hair', 'skirt_lower', 'body_torso', 'arm_left', 'arm_right'].includes(key);
+        const cols = isHighDetail ? 5 : 4;
+        const rows = isHighDetail ? 6 : 4;
+
+        const vGrid = [];
+        for (let r = 0; r <= rows; r++) {
+          const ny = r / rows;
+          const rowPts = [];
+          for (let c = 0; c <= cols; c++) {
+            const nx = c / cols;
+            const vx0 = baseX + nx * drawW;
+            const vy0 = baseY + ny * drawH;
+            const [dx, dy] = deformPartVertex(key, nx, ny, vx0, vy0, drawW, drawH, skel, now);
+            rowPts.push({
+              x: dx,
+              y: dy,
+              u: nx * img.width,
+              v: ny * img.height,
+            });
+          }
+          vGrid.push(rowPts);
         }
 
-        ctx.translate(anchorX + offsetX, anchorY + offsetY);
-        ctx.rotate(rotation);
-        ctx.scale(scaleX, scaleY);
+        const hue = (partIdx * 37) % 360;
+        const wireStroke = `hsla(${hue}, 88%, 62%, 0.72)`;
 
-        ctx.drawImage(img, -drawW * pivot[0], -drawH * pivot[1], drawW, drawH);
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const p00 = vGrid[r][c];
+            const p10 = vGrid[r][c + 1];
+            const p01 = vGrid[r + 1][c];
+            const p11 = vGrid[r + 1][c + 1];
+
+            if ((r + c) % 2 === 0) {
+              drawTexturedTriangle(ctx, img, p00.u, p00.v, p10.u, p10.v, p11.u, p11.v, p00.x, p00.y, p10.x, p10.y, p11.x, p11.y);
+              drawTexturedTriangle(ctx, img, p00.u, p00.v, p11.u, p11.v, p01.u, p01.v, p00.x, p00.y, p11.x, p11.y, p01.x, p01.y);
+            } else {
+              drawTexturedTriangle(ctx, img, p00.u, p00.v, p10.u, p10.v, p01.u, p01.v, p00.x, p00.y, p10.x, p10.y, p01.x, p01.y);
+              drawTexturedTriangle(ctx, img, p10.u, p10.v, p11.u, p11.v, p01.u, p01.v, p10.x, p10.y, p11.x, p11.y, p01.x, p01.y);
+            }
+
+            if (showMeshWire) {
+              ctx.save();
+              ctx.strokeStyle = wireStroke;
+              ctx.lineWidth = 0.85;
+              ctx.beginPath();
+              ctx.moveTo(p00.x, p00.y);
+              ctx.lineTo(p10.x, p10.y);
+              ctx.lineTo(p11.x, p11.y);
+              ctx.lineTo(p00.x, p00.y);
+              ctx.lineTo(p01.x, p01.y);
+              ctx.lineTo(p11.x, p11.y);
+              ctx.stroke();
+              ctx.restore();
+            }
+          }
+        }
 
         if (key === 'head_base' && params.ParamCheek > 0.08) {
+          const leftCheek = vGrid[Math.floor(rows * 0.55)][Math.floor(cols * 0.25)];
+          const rightCheek = vGrid[Math.floor(rows * 0.55)][Math.ceil(cols * 0.75)];
+          ctx.save();
           ctx.fillStyle = 'rgba(255, 105, 145, ' + Math.min(0.45, params.ParamCheek * 0.38) + ')';
           ctx.beginPath();
-          ctx.ellipse(-drawW * 0.22, drawH * 0.05, drawW * 0.11, drawH * 0.045, 0, 0, Math.PI * 2);
-          ctx.ellipse(drawW * 0.22, drawH * 0.05, drawW * 0.11, drawH * 0.045, 0, 0, Math.PI * 2);
+          ctx.ellipse(leftCheek.x, leftCheek.y, drawW * 0.11, drawH * 0.045, skel.head.rot, 0, Math.PI * 2);
+          ctx.ellipse(rightCheek.x, rightCheek.y, drawW * 0.11, drawH * 0.045, skel.head.rot, 0, Math.PI * 2);
           ctx.fill();
+          ctx.restore();
         }
 
-        if (showBboxes) {
-          ctx.strokeStyle = 'rgba(56, 189, 248, 0.65)';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(-drawW * pivot[0], -drawH * pivot[1], drawW, drawH);
-          ctx.fillStyle = '#ef4444';
+        if (showWarpGrid && ['head_base', 'front_hair', 'body_torso', 'skirt_lower'].includes(key)) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(245, 158, 11, 0.78)';
+          ctx.lineWidth = 1.4;
           ctx.beginPath();
-          ctx.arc(0, 0, 4, 0, Math.PI * 2);
-          ctx.fill();
+          for (let c = 0; c <= cols; c++) { const p0 = vGrid[0][c]; c === 0 ? ctx.moveTo(p0.x, p0.y) : ctx.lineTo(p0.x, p0.y); }
+          for (let r = 1; r <= rows; r++) { const p0 = vGrid[r][cols]; ctx.lineTo(p0.x, p0.y); }
+          for (let c = cols - 1; c >= 0; c--) { const p0 = vGrid[rows][c]; ctx.lineTo(p0.x, p0.y); }
+          for (let r = rows - 1; r >= 0; r--) { const p0 = vGrid[r][0]; ctx.lineTo(p0.x, p0.y); }
+          ctx.stroke();
+          ctx.restore();
         }
-
-        ctx.restore();
       });
 
-      // Render motion-driven emotion overlays (Heart / Star / Exclaim / Sweat)
-      const headX = (activeCharacter.parts?.head_base?.center?.[0] || 500) * scaleRatio;
-      const headY = (activeCharacter.parts?.head_base?.center?.[1] || 256) * scaleRatio;
+      if (showSkeleton) {
+        const sr = scaleRatio;
+        const drawBoneLink = (p1, p2, color = '#34d399', width = 2.6) => {
+          ctx.save();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+          ctx.moveTo(p1.x * sr, p1.y * sr);
+          ctx.lineTo(p2.x * sr, p2.y * sr);
+          ctx.stroke();
+          ctx.fillStyle = '#0f172a';
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(p1.x * sr, p1.y * sr, 4.2, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(p2.x * sr, p2.y * sr, 3.6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        };
+
+        drawBoneLink(skel.pelvis, skel.spine_chest, '#10b981', 3.2);
+        drawBoneLink(skel.spine_chest, skel.neck, '#10b981', 3.0);
+        drawBoneLink(skel.neck, skel.head, '#38bdf8', 3.2);
+
+        drawBoneLink(skel.spine_chest, skel.shoulder_L, '#a78bfa', 2.2);
+        drawBoneLink(skel.shoulder_L, skel.elbow_L, '#a78bfa', 2.8);
+        drawBoneLink(skel.elbow_L, skel.wrist_L, '#c084fc', 2.4);
+
+        drawBoneLink(skel.spine_chest, skel.shoulder_R, '#a78bfa', 2.2);
+        drawBoneLink(skel.shoulder_R, skel.elbow_R, '#a78bfa', 2.8);
+        drawBoneLink(skel.elbow_R, skel.wrist_R, '#c084fc', 2.4);
+        if (activeCharacter.parts?.hand_prop_effect) {
+          drawBoneLink(skel.wrist_R, skel.prop_joint, '#f59e0b', 2.2);
+        }
+
+        const { hf, skN, tlN } = skel.chains;
+        const hfRoot = { x: skel.head.x, y: skel.head.y - 60 };
+        const hfMid = { x: skel.head.x + hf[0] * 0.4, y: skel.head.y - 10 };
+        const hfTip = { x: skel.head.x + hf[2] * 0.8, y: skel.head.y + 42 };
+        drawBoneLink(hfRoot, hfMid, '#38bdf8', 1.8);
+        drawBoneLink(hfMid, hfTip, '#38bdf8', 1.8);
+
+        if (activeCharacter.parts?.skirt_lower) {
+          const skRoot = { x: skel.pelvis.x, y: skel.pelvis.y };
+          const skMid = { x: skel.pelvis.x + skN[0] * 0.5, y: skel.pelvis.y + 52 };
+          const skHem = { x: skel.pelvis.x + skN[2] * 0.9, y: skel.pelvis.y + 115 };
+          drawBoneLink(skRoot, skMid, '#f472b6', 2.0);
+          drawBoneLink(skMid, skHem, '#f472b6', 2.0);
+        }
+
+        if (activeCharacter.parts?.back_tail_wings) {
+          const t0 = { x: skel.pelvis.x, y: skel.pelvis.y - 5 };
+          const t1 = { x: skel.pelvis.x + tlN[0] * 0.5, y: skel.pelvis.y + 45 };
+          const t2 = { x: skel.pelvis.x + tlN[2] * 0.9, y: skel.pelvis.y + 110 };
+          const t3 = { x: skel.pelvis.x + tlN[3] * 1.3, y: skel.pelvis.y + 175 };
+          drawBoneLink(t0, t1, '#fb923c', 2.2);
+          drawBoneLink(t1, t2, '#fb923c', 2.0);
+          drawBoneLink(t2, t3, '#fb923c', 1.8);
+        }
+      }
+
+      const headX = skel.head.x * scaleRatio;
+      const headY = skel.head.y * scaleRatio;
       const bobY = Math.sin(now * 0.008) * 6;
       ctx.save();
       ctx.font = 'bold 30px sans-serif';
@@ -1832,6 +2252,50 @@
         ctx.fillText(ef.symbol, ef.x, ef.y - p * 45);
         ctx.restore();
       });
+    }
+
+    async function loadServerCharacterPackage(charDirName) {
+      const base = studioServerBase || window.location.origin;
+      try {
+        log(`🦊 正在加载高阶 16 部件骨骼与三角网格模型包: ${charDirName}...`);
+        const r = await fetch(`${base}/output/${charDirName}/character_data.json`);
+        if (!r.ok) throw new Error(`无法读取 /output/${charDirName}/character_data.json`);
+        const cdata = await r.json();
+
+        const is4x4 = Object.keys(cdata.parts || {}).length > 9;
+        COMPONENT_KEYS = is4x4 ? COMPONENT_KEYS_4X4.slice() : COMPONENT_KEYS_3X3.slice();
+        const gridSel = document.getElementById('gridLayoutSelect');
+        if (gridSel) gridSel.value = is4x4 ? '4x4' : '3x3';
+
+        activeCharacter = cdata;
+        document.getElementById('hudCharName').innerText = cdata.character_name || charDirName;
+
+        if (cdata.action_spec?.dialogues) {
+          activeDialogues = Object.assign({}, DEFAULT_DIALOGUES, cdata.action_spec.dialogues);
+        }
+        generatedFilesCache.action_spec = cdata.action_spec || {};
+
+        const loadedSlice = {};
+        await Promise.all(Object.keys(cdata.parts).map(async (k) => {
+          const url = `${base}/output/${charDirName}/parts/${k}.png`;
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+          partsImages[k] = img;
+          layerVisibility[k] = true;
+          loadedSlice[k] = { dataUrl: url, width: img.width, height: img.height };
+        }));
+
+        updateComponentsGallery(loadedSlice, is4x4 ? '4x4' : '3x3');
+        buildLayersList();
+        renderCustomMotionButtons(cdata.custom_motions || cdata.action_spec?.custom_motions || []);
+
+        const ms = cdata.mesh_summary || {};
+        log(`✅ 已加载【${charDirName}】：${Object.keys(cdata.parts).length} 个独立组件 | ${ms.bone_count || 41} 节父子骨骼 | ${ms.total_triangles || 1748} 个自适应三角网格！`);
+        playMotion('Idle', 'idle');
+      } catch (e) {
+        log(`⚠️ 加载模型包失败: ${e.message}`);
+      }
     }
 
     function animationLoop(now) {
@@ -1886,22 +2350,74 @@
 
     function updateParam(name, val) {
       params[name] = val;
+      manualLocks[name] = { value: val, time: performance.now() };
       const idMap = {
         'ParamAngleX': 'valAngleX',
         'ParamAngleY': 'valAngleY',
         'ParamArmRAngle': 'valArmR',
         'ParamMouthOpenY': 'valMouth',
+        'ParamElbowRAngle': 'valElbowR',
+        'ParamTailWag': 'valTailWag',
       };
-      if (idMap[name]) document.getElementById(idMap[name]).innerText = val.toFixed(1);
+      if (idMap[name] && document.getElementById(idMap[name])) {
+        document.getElementById(idMap[name]).innerText = val.toFixed(1);
+      }
+    }
+
+    async function requestHrioProxy(subpath, payload, key, baseUrl) {
+      const candidates = [studioServerBase, window.location.origin, 'http://127.0.0.1:8090', 'http://127.0.0.1:8096', 'http://127.0.0.1:8095'].filter(
+        b => b && b !== 'null' && !String(b).startsWith('file:')
+      );
+      const cleanSub = String(subpath || '').replace(/^\/+/, '');
+      for (const base of candidates) {
+        try {
+          const headers = { 'Content-Type': 'application/json', 'X-Target-Base-Url': baseUrl };
+          if (key) headers['Authorization'] = 'Bearer ' + key;
+          const r = await fetch(base + '/api/v1/' + cleanSub, {
+            method: 'POST',
+            mode: 'cors',
+            headers,
+            body: JSON.stringify(payload),
+          });
+          return r;
+        } catch (_e) {}
+      }
+      return await fetch(baseUrl + '/' + cleanSub, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+        body: JSON.stringify(payload),
+      });
     }
 
     function loadImageAsync(url) {
-      return new Promise((res, rej) => {
+      return new Promise(async (res, rej) => {
+        const uStr = String(url || '').trim();
+        if (uStr.startsWith('http://') || uStr.startsWith('https://')) {
+          const candidates = [studioServerBase, window.location.origin, 'http://127.0.0.1:8090', 'http://127.0.0.1:8096', 'http://127.0.0.1:8095'].filter(
+            b => b && b !== 'null' && !String(b).startsWith('file:')
+          );
+          for (const base of candidates) {
+            try {
+              const r = await fetch(base + '/api/proxy?url=' + encodeURIComponent(uStr), { mode: 'cors' });
+              if (r.ok) {
+                const blob = await r.blob();
+                if (blob && blob.size > 0) {
+                  const objUrl = URL.createObjectURL(blob);
+                  const im = new Image();
+                  im.onload = () => { setTimeout(() => URL.revokeObjectURL(objUrl), 5000); res(im); };
+                  im.onerror = () => { URL.revokeObjectURL(objUrl); rej(new Error('图片加载失败')); };
+                  im.src = objUrl;
+                  return;
+                }
+              }
+            } catch (_e) {}
+          }
+        }
         const im = new Image();
-        if (url && url.startsWith('http')) im.crossOrigin = 'anonymous';
+        if (uStr.startsWith('http')) im.crossOrigin = 'anonymous';
         im.onload = () => res(im);
         im.onerror = () => rej(new Error('图片加载失败'));
-        im.src = url;
+        im.src = uStr;
       });
     }
 
@@ -1971,23 +2487,19 @@
         '4. dialogues: {"login":"...","home":"...","main_1":"...","main_2":"...","main_3":"...","touch_head":"...","touch_body":"...","touch_special":"...","wedding":"..."}\n' +
         '严格只输出合法JSON对象。';
 
-      const llmResp = await fetch(baseUrl + '/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-        body: JSON.stringify({
-          model: 'gemini-3.8-flash',
-          reasoning_effort: 'low',
-          temperature: 0.2,
-          response_format: { type: 'json_object' },
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'image_url', image_url: { url: mattedSheetDataUrl } },
-              { type: 'text', text: promptBody }
-            ]
-          }]
-        })
-      });
+      const llmResp = await requestHrioProxy('chat/completions', {
+        model: 'gemini-3.8-flash',
+        reasoning_effort: 'low',
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: mattedSheetDataUrl } },
+            { type: 'text', text: promptBody }
+          ]
+        }]
+      }, key, baseUrl);
       if (!llmResp.ok) {
         throw new Error('gemini-3.8-flash 接口返回错误 (' + llmResp.status + ')');
       }
@@ -2419,14 +2931,10 @@
             reqBody.images = [attachedDataUrl];
           }
 
-          const imgResp = await fetch(baseUrl + '/images/generations', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-            body: JSON.stringify(reqBody)
-          });
+          const imgResp = await requestHrioProxy('images/generations', reqBody, key, baseUrl);
           if (!imgResp.ok) throw new Error('生图接口返回错误 (' + imgResp.status + '): ' + (await imgResp.text()));
           const imgJson = await imgResp.json();
-          const imgUrl = imgJson.data[0].url || ('data:image/png;base64,' + imgJson.data[0].b64_json);
+          const imgUrl = imgJson.data[0].data_url || (imgJson.data[0].b64_json ? ('data:image/png;base64,' + imgJson.data[0].b64_json) : imgJson.data[0].url);
           lastGeneratedSheetDataUrl = imgUrl;
           document.getElementById('rawSheetPreview').src = imgUrl;
           gridImg = await loadImageAsync(imgUrl);
@@ -2505,13 +3013,14 @@
       log('✅ 预置 9 宫格拆件与 2.5D 骨骼装配完成！可直接点击右侧立绘互动，或在上方输入提示词生成新角色。');
 
       if (studioServerBase) {
-        document.getElementById('rawSheetPreview').src = studioServerBase + '/examples/character_3x3_grid.jpg';
-        document.getElementById('atlasPreview').src = studioServerBase + '/output/banerwei_sailor/textures/texture_00.png';
+        document.getElementById('rawSheetPreview').src = studioServerBase + '/examples/fox_miko_4x4_4k_sheet.jpg';
+        document.getElementById('atlasPreview').src = studioServerBase + '/output/fox_miko_4x4_4k/textures/texture_00.png';
+        await loadServerCharacterPackage('dragon_empress_4x4_4k');
       }
     }
 
     async function checkBackendServer() {
-      const candidates = [window.location.origin, 'http://127.0.0.1:8090'];
+      const candidates = ['http://127.0.0.1:8092', 'http://127.0.0.1:8091', window.location.origin, 'http://127.0.0.1:8090'];
       for (const base of candidates) {
         if (!base || base === 'null' || base.startsWith('file:')) continue;
         try {

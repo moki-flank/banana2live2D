@@ -16,6 +16,13 @@
 
 ## 🌟 效果展示 (Demo Showcase)
 
+### 0️⃣ v1.3 升级：动态中轴 41 节父子层级骨骼 + 1,700+ 自适应三角网格 (ArtMesh) + 轮廓锁缝校准
+
+| 1. 东煌苍龙仙子（纯文本端到端四步生成总览） | 2. 重樱九尾白狐巫女（UV三角网格 + 26节骨骼 + 四阶段动作） |
+| :---: | :---: |
+| <img src="examples/dragon_empress_live_test_showcase.png" width="440" alt="东煌苍龙仙子四步生成总览" /> | <img src="examples/skeletal_mesh_live2d_showcase.png" width="440" alt="九尾白狐巫女骨骼与三角网格总览" /> |
+
+
 ### 1️⃣ 4×4 十六宫格（16 灵活组件）+ 4K 超清（4096×4096 UHD）实测效果
 
 > 示例输入提示词（4×4 + 4K 纯文本模式）：  
